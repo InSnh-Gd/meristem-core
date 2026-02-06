@@ -1,0 +1,20 @@
+# Meristem Core 配置文件
+
+[server]
+host = "0.0.0.0"
+port = 8081
+ws_path = "/ws"
+
+[database]
+mongo_uri = "mongodb://localhost:27017/meristem"
+
+[security]
+jwt_algorithm = "HS256"
+jwt_secret = ""  # 首次启动自动生成
+access_token_ttl = 3600
+refresh_token_ttl = 604800
+bootstrap_token_ttl = 1800
+
+[logging]
+level = "info"
+format = "json"

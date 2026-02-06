@@ -1,0 +1,26 @@
+{
+  "name": "meristem-core",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target bun"
+  },
+  "dependencies": {
+    "@elysiajs/jwt": "^1.4.0",
+    "@iarna/toml": "^2.2.5",
+    "bcrypt": "^6.0.0",
+    "elysia": "^1.0.0",
+    "jose": "^6.1.3",
+    "meristem-shared": "git+https://github.com/InSnh-Gd/meristem-shared.git#v0.1.0",
+    "mongodb": "^6.0.0",
+    "nats": "^2.29.3"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^25.1.0",
+    "pino": "^10.3.0",
+    "typescript": "^5.0.0"
+  }
+}
