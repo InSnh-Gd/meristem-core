@@ -175,7 +175,7 @@ test('joinRoute initializes hardware profile baseline for new nodes', async (): 
   const driftInfo = createdNode.hardware_profile_drift as Record<string, unknown> | undefined;
   expect(driftInfo?.detected).toBe(false);
   expect(driftInfo?.baseline_hash).toBe(baselineHash);
-  expect(updates).toHaveLength(1);
+  expect(updates).toHaveLength(0);
   expect(auditEvents).toHaveLength(1);
 
   delete (global as { db?: Db }).db;
@@ -414,6 +414,51 @@ test('joinRoute writes drift audit event when hardware profile hash drifts', asy
   expect(auditMeta.drift_detected).toBe(true);
   expect(auditMeta.baseline_hash).toBe(baselineHash);
   expect(auditMeta.incoming_hash).toBe(driftHash);
+
+  delete (global as { db?: Db }).db;
+});
+
+test('joinRoute rejects mismatched hardware_profile_hash when profile is provided', async (): Promise<void> => {
+  const updates: UpdateOperationRecord[] = [];
+  const baselineProfile = createBaselineProfile();
+  const realHash = await createHardwareProfileHash(baselineProfile);
+  const fakeHash = realHash.replace(/^./, realHash[0] === 'a' ? 'b' : 'a');
+
+  const nodeCollection: NodeCollectionMock = {
+    findOne: async (): Promise<NodeDocument | null> => null,
+    insertOne: async (): Promise<{ insertedId: string }> => ({ insertedId: 'unused' }),
+    updateOne: async (
+      filter: Record<string, unknown>,
+      update: Record<string, unknown>,
+    ): Promise<{ modifiedCount: number }> => {
+      updates.push({ filter, update });
+      return { modifiedCount: 1 };
+    },
+  };
+
+  (global as { db?: Db }).db = createDbMock(nodeCollection);
+  const app = new Elysia();
+  joinRoute(app, createAuditLogger([]));
+
+  const response = await app.handle(
+    new Request('http://localhost/api/v1/join', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        hwid: 'e'.repeat(64),
+        hostname: 'hash-mismatch-node',
+        persona: 'GIG',
+        hardware_profile: baselineProfile,
+        hardware_profile_hash: fakeHash,
+      }),
+    }),
+  );
+  const payload = await response.json();
+
+  expect(response.status).toBe(400);
+  expect(payload.success).toBe(false);
+  expect(payload.error).toBe('HARDWARE_PROFILE_HASH_MISMATCH');
+  expect(updates).toHaveLength(0);
 
   delete (global as { db?: Db }).db;
 });

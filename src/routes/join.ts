@@ -133,19 +133,35 @@ const createHardwareProfileHash = async (profile: NodeHardwareProfile): Promise<
     .join('');
 };
 
+type ResolvedHardwareProfileHash = {
+  hash?: string;
+  mismatch: boolean;
+};
+
 const resolveIncomingHardwareProfileHash = async (
   profile: NodeHardwareProfile | undefined,
   providedHash: string | undefined,
-): Promise<string | undefined> => {
-  if (providedHash && HARDWARE_HASH_PATTERN.test(providedHash)) {
-    return providedHash;
-  }
-
+): Promise<ResolvedHardwareProfileHash> => {
   if (!profile) {
-    return undefined;
+    if (providedHash && HARDWARE_HASH_PATTERN.test(providedHash)) {
+      return { hash: providedHash, mismatch: false };
+    }
+    return { hash: undefined, mismatch: false };
   }
 
-  return createHardwareProfileHash(profile);
+  const computedHash = await createHardwareProfileHash(profile);
+  if (!providedHash) {
+    return { hash: computedHash, mismatch: false };
+  }
+
+  if (!HARDWARE_HASH_PATTERN.test(providedHash)) {
+    return { hash: computedHash, mismatch: true };
+  }
+
+  return {
+    hash: computedHash,
+    mismatch: providedHash !== computedHash,
+  };
 };
 
 /**
@@ -184,6 +200,7 @@ export const createNode = async (
   hwid: string,
   persona: Persona,
   options: {
+    hostname?: string;
     hardwareProfile?: NodeHardwareProfile;
     hardwareProfileHash?: string;
   } = {},
@@ -198,7 +215,7 @@ export const createNode = async (
   const newNode: NodeDocument = {
     node_id,
     hwid,
-    hostname: '', // 将在路由处理中从请求体填充
+    hostname: options.hostname ?? '',
     persona,
     hardware_profile: options.hardwareProfile,
     hardware_profile_hash: options.hardwareProfileHash,
@@ -280,10 +297,18 @@ export const joinRoute = (app: Elysia, auditLogger: AuditLogger = logAuditEvent)
     async ({ body, set, request }) => {
       const { hwid, hostname, persona, hardware_profile, hardware_profile_hash } = body;
       const incomingHardwareProfile = hardware_profile as NodeHardwareProfile | undefined;
-      const incomingHash = await resolveIncomingHardwareProfileHash(
+      const incomingHashResolution = await resolveIncomingHardwareProfileHash(
         incomingHardwareProfile,
         hardware_profile_hash,
       );
+      if (incomingHashResolution.mismatch) {
+        set.status = 400;
+        return {
+          success: false,
+          error: 'HARDWARE_PROFILE_HASH_MISMATCH',
+        };
+      }
+      const incomingHash = incomingHashResolution.hash;
 
       const db = (global as { db?: Db }).db;
 
@@ -378,6 +403,7 @@ export const joinRoute = (app: Elysia, auditLogger: AuditLogger = logAuditEvent)
         }
       } else {
         const newNode = await createNode(db, hwid, persona, {
+          hostname,
           hardwareProfile: incomingHardwareProfile,
           hardwareProfileHash: incomingHash,
         });
@@ -388,12 +414,6 @@ export const joinRoute = (app: Elysia, auditLogger: AuditLogger = logAuditEvent)
           status,
         };
 
-        await db
-          .collection<NodeDocument>(NODES_COLLECTION)
-          .updateOne(
-            { node_id },
-            { $set: { hostname } },
-          );
       }
 
       const traceId = extractTraceId(request.headers) ?? generateTraceId();
@@ -426,6 +446,10 @@ export const joinRoute = (app: Elysia, auditLogger: AuditLogger = logAuditEvent)
       body: JoinRequestBodySchema,
       response: {
         200: JoinResponseBodySchema,
+        400: t.Object({
+          success: t.Boolean(),
+          error: t.String(),
+        }),
         500: t.Object({
           success: t.Boolean(),
           error: t.String(),

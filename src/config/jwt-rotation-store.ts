@@ -1,4 +1,5 @@
 import { mkdir, readFile, writeFile } from 'fs/promises';
+import { readFileSync } from 'fs';
 import { dirname } from 'path';
 
 export type JwtRotationState = {
@@ -80,6 +81,16 @@ const normalizeState = (value: unknown): JwtRotationState | null => {
 export const readJwtRotationState = async (storePath: string): Promise<JwtRotationState | null> => {
   try {
     const raw = await readFile(storePath, 'utf-8');
+    const parsed = JSON.parse(raw) as unknown;
+    return normalizeState(parsed);
+  } catch {
+    return null;
+  }
+};
+
+export const readJwtRotationStateSync = (storePath: string): JwtRotationState | null => {
+  try {
+    const raw = readFileSync(storePath, 'utf-8');
     const parsed = JSON.parse(raw) as unknown;
     return normalizeState(parsed);
   } catch {

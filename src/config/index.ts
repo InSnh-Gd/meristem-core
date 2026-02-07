@@ -6,6 +6,7 @@
 import { parse } from '@iarna/toml';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
+import { readJwtRotationStateSync } from './jwt-rotation-store';
 
 export interface CoreConfig {
     server: {
@@ -82,52 +83,6 @@ const normalizeVerifySecrets = (
     return normalized;
 };
 
-type RotationState = {
-    current_sign_secret: string;
-    verify_secrets: string[];
-    rotated_at: string;
-    grace_seconds: number;
-};
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-    typeof value === 'object' && value !== null && !Array.isArray(value);
-
-const loadRotationStateSync = (storePath: string): RotationState | null => {
-    if (!existsSync(storePath)) {
-        return null;
-    }
-
-    try {
-        const raw = readFileSync(storePath, 'utf-8');
-        const parsed = JSON.parse(raw) as unknown;
-        if (!isRecord(parsed)) {
-            return null;
-        }
-
-        const currentSignSecret = parsed.current_sign_secret;
-        if (typeof currentSignSecret !== 'string' || currentSignSecret.length === 0) {
-            return null;
-        }
-
-        const verifySecrets = Array.isArray(parsed.verify_secrets)
-            ? parsed.verify_secrets.filter((item): item is string => typeof item === 'string' && item.length > 0)
-            : [];
-        const graceSeconds =
-            typeof parsed.grace_seconds === 'number' && Number.isFinite(parsed.grace_seconds) && parsed.grace_seconds > 0
-                ? Math.floor(parsed.grace_seconds)
-                : 86400;
-
-        return {
-            current_sign_secret: currentSignSecret,
-            verify_secrets: normalizeVerifySecrets(currentSignSecret, verifySecrets),
-            rotated_at: typeof parsed.rotated_at === 'string' ? parsed.rotated_at : new Date(0).toISOString(),
-            grace_seconds: graceSeconds,
-        };
-    } catch {
-        return null;
-    }
-};
-
 /**
  * 加载配置文件
  * 优先级: 环境变量 > 配置文件 > 默认值
@@ -154,7 +109,7 @@ export function loadConfig(): CoreConfig {
         process.env.MERISTEM_SECURITY_JWT_ROTATION_STORE_PATH ??
         fileSecurity?.jwt_rotation_store_path ??
         join(process.cwd(), 'data', 'core', 'jwt-rotation.json');
-    const rotationState = loadRotationStateSync(rotationStorePath);
+    const rotationState = readJwtRotationStateSync(rotationStorePath);
     const legacyJwtSecret =
         process.env.MERISTEM_SECURITY_JWT_SECRET ??
         fileSecurity?.jwt_secret ??

@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import { loadConfig } from '../config';
 import {
   readJwtRotationState,
+  readJwtRotationStateSync,
   writeJwtRotationState,
   type JwtRotationState,
 } from '../config/jwt-rotation-store';
@@ -52,6 +53,21 @@ test('write/read jwt rotation state roundtrip', async (): Promise<void> => {
 
   await writeJwtRotationState(storePath, inputState);
   const loaded = await readJwtRotationState(storePath);
+
+  expect(loaded).toEqual(inputState);
+});
+
+test('readJwtRotationStateSync returns normalized state for existing store file', async (): Promise<void> => {
+  const storePath = await createTempStorePath();
+  const inputState: JwtRotationState = {
+    current_sign_secret: 'sign-secret-new',
+    verify_secrets: ['sign-secret-new', 'sign-secret-old'],
+    rotated_at: '2026-02-07T12:00:00.000Z',
+    grace_seconds: 3600,
+  };
+
+  await writeJwtRotationState(storePath, inputState);
+  const loaded = readJwtRotationStateSync(storePath);
 
   expect(loaded).toEqual(inputState);
 });
