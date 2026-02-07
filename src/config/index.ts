@@ -5,6 +5,7 @@
  */
 import { parse } from '@iarna/toml';
 import { readFileSync, existsSync } from 'fs';
+import { join } from 'path';
 
 export interface CoreConfig {
     server: {
@@ -21,6 +22,7 @@ export interface CoreConfig {
         jwt_sign_secret: string;
         jwt_verify_secrets: string[];
         jwt_rotation_grace_seconds: number;
+        jwt_rotation_store_path: string;
         access_token_ttl: number;
         refresh_token_ttl: number;
         bootstrap_token_ttl: number;
@@ -80,6 +82,52 @@ const normalizeVerifySecrets = (
     return normalized;
 };
 
+type RotationState = {
+    current_sign_secret: string;
+    verify_secrets: string[];
+    rotated_at: string;
+    grace_seconds: number;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const loadRotationStateSync = (storePath: string): RotationState | null => {
+    if (!existsSync(storePath)) {
+        return null;
+    }
+
+    try {
+        const raw = readFileSync(storePath, 'utf-8');
+        const parsed = JSON.parse(raw) as unknown;
+        if (!isRecord(parsed)) {
+            return null;
+        }
+
+        const currentSignSecret = parsed.current_sign_secret;
+        if (typeof currentSignSecret !== 'string' || currentSignSecret.length === 0) {
+            return null;
+        }
+
+        const verifySecrets = Array.isArray(parsed.verify_secrets)
+            ? parsed.verify_secrets.filter((item): item is string => typeof item === 'string' && item.length > 0)
+            : [];
+        const graceSeconds =
+            typeof parsed.grace_seconds === 'number' && Number.isFinite(parsed.grace_seconds) && parsed.grace_seconds > 0
+                ? Math.floor(parsed.grace_seconds)
+                : 86400;
+
+        return {
+            current_sign_secret: currentSignSecret,
+            verify_secrets: normalizeVerifySecrets(currentSignSecret, verifySecrets),
+            rotated_at: typeof parsed.rotated_at === 'string' ? parsed.rotated_at : new Date(0).toISOString(),
+            grace_seconds: graceSeconds,
+        };
+    } catch {
+        return null;
+    }
+};
+
 /**
  * 加载配置文件
  * 优先级: 环境变量 > 配置文件 > 默认值
@@ -102,22 +150,33 @@ export function loadConfig(): CoreConfig {
     }
 
     const fileSecurity = fileConfig.security;
+    const rotationStorePath =
+        process.env.MERISTEM_SECURITY_JWT_ROTATION_STORE_PATH ??
+        fileSecurity?.jwt_rotation_store_path ??
+        join(process.cwd(), 'data', 'core', 'jwt-rotation.json');
+    const rotationState = loadRotationStateSync(rotationStorePath);
     const legacyJwtSecret =
         process.env.MERISTEM_SECURITY_JWT_SECRET ??
         fileSecurity?.jwt_secret ??
         process.env.JWT_SECRET ??
         '';
+    const fileSignSecret = fileSecurity?.jwt_sign_secret ?? legacyJwtSecret;
     const signSecret =
         process.env.MERISTEM_SECURITY_JWT_SIGN_SECRET ??
-        fileSecurity?.jwt_sign_secret ??
-        legacyJwtSecret;
+        rotationState?.current_sign_secret ??
+        fileSignSecret;
     const envVerifySecrets = parseSecretList(process.env.MERISTEM_SECURITY_JWT_VERIFY_SECRETS);
     const fileVerifySecrets = Array.isArray(fileSecurity?.jwt_verify_secrets)
         ? fileSecurity.jwt_verify_secrets.filter((item): item is string => typeof item === 'string' && item.length > 0)
         : [];
+    const rotationVerifySecrets = rotationState?.verify_secrets ?? [];
     const verifySecrets = normalizeVerifySecrets(
         signSecret,
-        envVerifySecrets.length > 0 ? envVerifySecrets : fileVerifySecrets,
+        envVerifySecrets.length > 0
+            ? envVerifySecrets
+            : rotationVerifySecrets.length > 0
+              ? rotationVerifySecrets
+              : fileVerifySecrets,
     );
 
     // 合并默认值和文件配置
@@ -135,9 +194,10 @@ export function loadConfig(): CoreConfig {
             jwt_secret: signSecret,
             jwt_sign_secret: signSecret,
             jwt_verify_secrets: verifySecrets,
+            jwt_rotation_store_path: rotationStorePath,
             jwt_rotation_grace_seconds: parseNumber(
                 process.env.MERISTEM_SECURITY_JWT_ROTATION_GRACE_SECONDS,
-                fileSecurity?.jwt_rotation_grace_seconds ?? 86400,
+                rotationState?.grace_seconds ?? fileSecurity?.jwt_rotation_grace_seconds ?? 86400,
             ),
             access_token_ttl: fileSecurity?.access_token_ttl ?? 3600,
             refresh_token_ttl: fileSecurity?.refresh_token_ttl ?? 604800,

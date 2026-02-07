@@ -1,6 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { Db } from 'mongodb';
-import { NodeDocument, NODES_COLLECTION } from '../db/collections';
+import { NodeDocument, NODES_COLLECTION, type NodeHardwareProfile } from '../db/collections';
 import { extractTraceId, generateTraceId } from '../utils/trace-context';
 import {
   logAuditEvent,
@@ -14,6 +14,46 @@ import {
  * - GIG: 远程工作节点
  */
 export type Persona = 'AGENT' | 'GIG';
+
+const HARDWARE_HASH_PATTERN = /^[a-f0-9]{64}$/;
+
+const HardwareProfileSchema = t.Object({
+  cpu: t.Optional(
+    t.Object({
+      model: t.String(),
+      cores: t.Number({ minimum: 1 }),
+      threads: t.Optional(t.Number({ minimum: 1 })),
+    }),
+  ),
+  memory: t.Optional(
+    t.Object({
+      total: t.Number({ minimum: 1 }),
+      available: t.Optional(t.Number({ minimum: 0 })),
+      type: t.Optional(t.String()),
+    }),
+  ),
+  storage: t.Optional(
+    t.Array(
+      t.Object({
+        type: t.Optional(t.String()),
+        size: t.Optional(t.Number({ minimum: 0 })),
+        total: t.Optional(t.Number({ minimum: 0 })),
+        available: t.Optional(t.Number({ minimum: 0 })),
+      }),
+    ),
+  ),
+  gpu: t.Optional(
+    t.Array(
+      t.Object({
+        model: t.String(),
+        vram: t.Optional(t.Number({ minimum: 0 })),
+        memory: t.Optional(t.Number({ minimum: 0 })),
+      }),
+    ),
+  ),
+  os: t.Optional(t.String()),
+  arch: t.Optional(t.Union([t.Literal('x86_64'), t.Literal('arm64'), t.Literal('unknown')])),
+});
 
 /**
  * Join 请求体 Schema
@@ -33,6 +73,13 @@ export const JoinRequestBodySchema = t.Object({
   persona: t.Union([t.Literal('AGENT'), t.Literal('GIG')], {
     description: '节点角色标识',
   }),
+  hardware_profile: t.Optional(HardwareProfileSchema),
+  hardware_profile_hash: t.Optional(
+    t.String({
+      description: '硬件画像哈希（SHA-256 十六进制）',
+      pattern: '^[a-f0-9]{64}$',
+    }),
+  ),
 });
 
 /**
@@ -49,11 +96,57 @@ export const JoinResponseBodySchema = t.Object({
       description: 'Core 虚拟 IP 地址',
       pattern: '^10\\.25\\.',
     }),
-    status: t.Union([t.Literal('new'), t.Literal('existing')], {
-      description: '节点状态：new=新节点，existing=恢复身份',
+    status: t.Union([t.Literal('new'), t.Literal('existing'), t.Literal('pending_approval')], {
+      description: '节点状态：new=新节点，existing=恢复身份，pending_approval=硬件漂移待审批',
     }),
   }),
 });
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const canonicalizeValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value.map((item) => canonicalizeValue(item));
+  }
+
+  if (isRecord(value)) {
+    const normalized: Record<string, unknown> = {};
+    for (const key of Object.keys(value).sort()) {
+      const candidate = value[key];
+      if (candidate !== undefined) {
+        normalized[key] = canonicalizeValue(candidate);
+      }
+    }
+    return normalized;
+  }
+
+  return value;
+};
+
+const createHardwareProfileHash = async (profile: NodeHardwareProfile): Promise<string> => {
+  const canonical = canonicalizeValue(profile);
+  const payload = JSON.stringify(canonical);
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(payload));
+  return Array.from(new Uint8Array(digest))
+    .map((value) => value.toString(16).padStart(2, '0'))
+    .join('');
+};
+
+const resolveIncomingHardwareProfileHash = async (
+  profile: NodeHardwareProfile | undefined,
+  providedHash: string | undefined,
+): Promise<string | undefined> => {
+  if (providedHash && HARDWARE_HASH_PATTERN.test(providedHash)) {
+    return providedHash;
+  }
+
+  if (!profile) {
+    return undefined;
+  }
+
+  return createHardwareProfileHash(profile);
+};
 
 /**
  * 纯函数：生成 HWID（硬件唯一指纹）
@@ -90,6 +183,10 @@ export const createNode = async (
   db: Db,
   hwid: string,
   persona: Persona,
+  options: {
+    hardwareProfile?: NodeHardwareProfile;
+    hardwareProfileHash?: string;
+  } = {},
 ): Promise<NodeDocument> => {
   // 生成 node_id：node-{timestamp}-{random}
   const timestamp = Date.now().toString(36);
@@ -103,6 +200,15 @@ export const createNode = async (
     hwid,
     hostname: '', // 将在路由处理中从请求体填充
     persona,
+    hardware_profile: options.hardwareProfile,
+    hardware_profile_hash: options.hardwareProfileHash,
+    hardware_profile_drift: options.hardwareProfileHash
+      ? {
+          detected: false,
+          baseline_hash: options.hardwareProfileHash,
+          incoming_hash: options.hardwareProfileHash,
+        }
+      : undefined,
     role_flags: {
       is_relay: false,
       is_storage: false,
@@ -172,9 +278,14 @@ export const joinRoute = (app: Elysia, auditLogger: AuditLogger = logAuditEvent)
   app.post(
     '/api/v1/join',
     async ({ body, set, request }) => {
-      const { hwid, hostname, persona } = body;
+      const { hwid, hostname, persona, hardware_profile, hardware_profile_hash } = body;
+      const incomingHardwareProfile = hardware_profile as NodeHardwareProfile | undefined;
+      const incomingHash = await resolveIncomingHardwareProfileHash(
+        incomingHardwareProfile,
+        hardware_profile_hash,
+      );
 
-      const db = await (global as { db?: Db }).db;
+      const db = (global as { db?: Db }).db;
 
       if (!db) {
         set.status = 500;
@@ -187,29 +298,95 @@ export const joinRoute = (app: Elysia, auditLogger: AuditLogger = logAuditEvent)
       const existingNode = await recoverNode(db, hwid);
 
       let node_id: string;
-      let status: 'new' | 'existing';
+      let status: 'new' | 'existing' | 'pending_approval';
+      let auditLevel: 'INFO' | 'WARN' = 'INFO';
+      let auditContent = 'Node joined';
+      let auditMeta: Record<string, unknown> = { persona };
+      const now = new Date();
 
       if (existingNode) {
         node_id = existingNode.node_id;
-        status = 'existing';
+        const baselineHash = existingNode.hardware_profile_hash;
+        const driftDetected =
+          typeof baselineHash === 'string' &&
+          baselineHash.length > 0 &&
+          baselineHash !== incomingHash;
 
-        await db
-          .collection<NodeDocument>(NODES_COLLECTION)
-          .updateOne(
-            { node_id },
-            {
-              $set: {
-                hostname,
-                persona,
-                'status.connection_status': 'online',
-                'status.last_seen': new Date(),
+        if (driftDetected) {
+          status = 'pending_approval';
+          auditLevel = 'WARN';
+          auditContent = 'Node join blocked by hardware profile drift';
+          auditMeta = {
+            ...auditMeta,
+            status,
+            drift_detected: true,
+            baseline_hash: baselineHash,
+            incoming_hash: incomingHash,
+          };
+
+          await db
+            .collection<NodeDocument>(NODES_COLLECTION)
+            .updateOne(
+              { node_id },
+              {
+                $set: {
+                  hostname,
+                  persona,
+                  ...(incomingHardwareProfile ? { hardware_profile: incomingHardwareProfile } : {}),
+                  ...(incomingHash ? { hardware_profile_hash: incomingHash } : {}),
+                  hardware_profile_drift: {
+                    detected: true,
+                    baseline_hash: baselineHash,
+                    incoming_hash: incomingHash,
+                    detected_at: now,
+                  },
+                  'status.online': false,
+                  'status.connection_status': 'pending_approval',
+                  'status.last_seen': now,
+                },
               },
-            },
-          );
+            );
+        } else {
+          status = 'existing';
+          const nextBaselineHash = baselineHash ?? incomingHash;
+          auditMeta = {
+            ...auditMeta,
+            status,
+          };
+
+          await db
+            .collection<NodeDocument>(NODES_COLLECTION)
+            .updateOne(
+              { node_id },
+              {
+                $set: {
+                  hostname,
+                  persona,
+                  ...(incomingHardwareProfile ? { hardware_profile: incomingHardwareProfile } : {}),
+                  ...(incomingHash ? { hardware_profile_hash: incomingHash } : {}),
+                  hardware_profile_drift: {
+                    detected: false,
+                    baseline_hash: nextBaselineHash,
+                    incoming_hash: incomingHash,
+                  },
+                  'status.online': true,
+                  'status.connection_status': 'online',
+                  'status.last_seen': now,
+                },
+              },
+            );
+        }
       } else {
-        const newNode = await createNode(db, hwid, persona);
+        const newNode = await createNode(db, hwid, persona, {
+          hardwareProfile: incomingHardwareProfile,
+          hardwareProfileHash: incomingHash,
+        });
         node_id = newNode.node_id;
         status = 'new';
+        auditMeta = {
+          ...auditMeta,
+          status,
+        };
 
         await db
           .collection<NodeDocument>(NODES_COLLECTION)
@@ -222,12 +399,12 @@ export const joinRoute = (app: Elysia, auditLogger: AuditLogger = logAuditEvent)
       const traceId = extractTraceId(request.headers) ?? generateTraceId();
       const auditEvent: AuditEventInput = {
         ts: Date.now(),
-        level: 'INFO',
+        level: auditLevel,
         node_id,
         source: 'join',
         trace_id: traceId,
-        content: 'Node joined',
-        meta: { persona, status },
+        content: auditContent,
+        meta: auditMeta,
       };
 
       try {

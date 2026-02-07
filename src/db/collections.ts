@@ -41,6 +41,39 @@ export type NodeInventory = {
   arch: 'x86_64' | 'arm64';
 };
 
+export type NodeHardwareProfile = {
+  cpu?: {
+    model: string;
+    cores: number;
+    threads?: number;
+  };
+  memory?: {
+    total: number;
+    available?: number;
+    type?: string;
+  };
+  storage?: Array<{
+    type?: string;
+    size?: number;
+    total?: number;
+    available?: number;
+  }>;
+  gpu?: Array<{
+    model: string;
+    vram?: number;
+    memory?: number;
+  }>;
+  os?: string;
+  arch?: 'x86_64' | 'arm64' | 'unknown';
+};
+
+export type NodeHardwareProfileDrift = {
+  detected: boolean;
+  baseline_hash?: string;
+  incoming_hash?: string;
+  detected_at?: Date;
+};
+
 export type NodeGpuInfo = {
   model: string;
   vram_total: number;
@@ -61,6 +94,9 @@ export type NodeDocument = {
   hwid: string;
   hostname: string;
   persona: 'AGENT' | 'GIG';
+  hardware_profile?: NodeHardwareProfile;
+  hardware_profile_hash?: string;
+  hardware_profile_drift?: NodeHardwareProfileDrift;
   role_flags: NodeRoleFlags;
   network: NodeNetwork;
   inventory: NodeInventory;

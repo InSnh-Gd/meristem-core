@@ -8,6 +8,7 @@ import { tasksRoute } from './routes/tasks';
 import { resultsRoute } from './routes/results';
 import { connectNats, subscribe } from './nats/connection';
 import { handleHeartbeatMessage, startHeartbeatMonitor } from './services/heartbeat';
+import { createPulseMessageHandler } from './services/pulse-ingest';
 import { setupJetstreamLogs } from './services/jetstream-setup';
 import { createLogger } from './utils/logger';
 import { createTraceContext } from './utils/trace-context';
@@ -75,6 +76,11 @@ export const startApp = async (config: AppConfig = {}): Promise<Elysia> => {
 
   await subscribe(natsTraceContext, 'meristem.v1.hb.>', async (msg) => {
     await handleHeartbeatMessage(db, heartbeatTraceContext, msg);
+  });
+
+  const pulseHandler = createPulseMessageHandler();
+  await subscribe(natsTraceContext, 'meristem.v1.sys.pulse', async (msg) => {
+    await pulseHandler(heartbeatTraceContext, msg);
   });
 
   await startHeartbeatMonitor(db, heartbeatTraceContext);
