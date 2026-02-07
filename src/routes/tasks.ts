@@ -5,6 +5,7 @@ import { TaskPayload } from '../db/collections';
 import { CreateTaskInput, createTask } from '../services/task-scheduler';
 import { logAuditEvent, type AuditEventInput } from '../services/audit';
 import { extractTraceId, generateTraceId } from '../utils/trace-context';
+import { validateCallDepthFromHeaders } from '../utils/call-depth';
 import { requireAuth, type AuthStore } from '../middleware/auth';
 
 const DEFAULT_LEASE_DURATION_MS = 60 * 60 * 1000;
@@ -103,6 +104,34 @@ export const tasksRoute = (app: Elysia): Elysia => {
       }
 
       const traceId = extractTraceId(request.headers) ?? generateTraceId();
+      const callDepth = validateCallDepthFromHeaders(request.headers);
+      if (!callDepth.ok) {
+        const invalidDepthAudit: AuditEventInput = {
+          ts: Date.now(),
+          level: 'WARN',
+          node_id: authStore.user.id,
+          source: 'tasks',
+          trace_id: traceId,
+          content: 'Rejected task request due to invalid call_depth',
+          meta: {
+            reason: callDepth.reason,
+            raw_call_depth: callDepth.raw ?? '',
+          },
+        };
+
+        try {
+          await logAuditEvent(db, invalidDepthAudit);
+        } catch (auditError) {
+          console.error('[Audit] failed to log invalid call_depth rejection', auditError);
+        }
+
+        set.status = 400;
+        return {
+          success: false,
+          error: 'INVALID_CALL_DEPTH',
+        };
+      }
+
       const taskId = randomUUID();
       const tags = body.tags ?? [];
       const { payload, targetNodeId } = normalizePayload(body.payload, body.name, tags);
@@ -155,6 +184,7 @@ export const tasksRoute = (app: Elysia): Elysia => {
           name: body.name,
           target_node_id: targetNodeId ?? '',
           tags,
+          call_depth: callDepth.depth,
         },
       };
 
@@ -174,6 +204,7 @@ export const tasksRoute = (app: Elysia): Elysia => {
       body: TasksRequestBodySchema,
       response: {
         201: TaskCreatedResponseSchema,
+        400: TaskErrorResponseSchema,
         401: TaskErrorResponseSchema,
         500: TaskErrorResponseSchema,
       },

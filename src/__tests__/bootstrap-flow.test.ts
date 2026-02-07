@@ -106,12 +106,15 @@ const login = async (app: Elysia, username: string, password: string): Promise<R
     }),
   );
 
-const createProtectedTask = async (app: Elysia, accessToken?: string): Promise<Response> => {
+const createProtectedTask = async (app: Elysia, accessToken?: string, callDepth?: string): Promise<Response> => {
   const headers: HeadersInit = {
     'content-type': 'application/json',
   };
   if (accessToken) {
     headers.authorization = `Bearer ${accessToken}`;
+  }
+  if (callDepth !== undefined) {
+    headers['x-call-depth'] = callDepth;
   }
 
   return app.handle(
@@ -237,5 +240,28 @@ test('protected task endpoint rejects missing authorization header', async (): P
   expect(response.status).toBe(401);
   expect(payload.success).toBe(false);
   expect(payload.error).toBe('UNAUTHORIZED');
+  expect(state.tasks).toHaveLength(0);
+});
+
+test('protected task endpoint rejects invalid call depth header', async (): Promise<void> => {
+  const state: TestState = { users: [], tasks: [], audits: [] };
+  (global as { db?: Db }).db = createMockDb(state);
+  const app = buildApp();
+
+  const bootstrapResponse = await bootstrap(app, 'admin', 'S3curePass!');
+  expect(bootstrapResponse.status).toBe(201);
+
+  const loginResponse = await login(app, 'admin', 'S3curePass!');
+  const loginPayload = asRecord(await loginResponse.json());
+  expect(loginResponse.status).toBe(200);
+
+  const taskResponse = await createProtectedTask(app, loginPayload.access_token as string, 'invalid-depth');
+  const taskPayload = asRecord(await taskResponse.json());
+
+  expect(taskResponse.status).toBe(400);
+  expect(taskPayload).toEqual({
+    success: false,
+    error: 'INVALID_CALL_DEPTH',
+  });
   expect(state.tasks).toHaveLength(0);
 });

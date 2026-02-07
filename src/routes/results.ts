@@ -4,6 +4,7 @@ import { Db } from 'mongodb';
 import { submitResult, type TaskResultPayload, type TaskResultStatus } from '../services/result-handler';
 import { logAuditEvent, type AuditEventInput } from '../services/audit';
 import { extractTraceId, generateTraceId } from '../utils/trace-context';
+import { validateCallDepthFromHeaders } from '../utils/call-depth';
 
 const ResultsRequestSchema = t.Object({
   task_id: t.String({
@@ -53,6 +54,34 @@ export const resultsRoute = (app: Elysia): Elysia => {
       }
 
       const traceId = extractTraceId(request.headers) ?? generateTraceId();
+      const callDepth = validateCallDepthFromHeaders(request.headers);
+      if (!callDepth.ok) {
+        const invalidDepthAudit: AuditEventInput = {
+          ts: Date.now(),
+          level: 'WARN',
+          node_id: 'core',
+          source: 'results',
+          trace_id: traceId,
+          content: 'Rejected result request due to invalid call_depth',
+          meta: {
+            reason: callDepth.reason,
+            raw_call_depth: callDepth.raw ?? '',
+          },
+        };
+
+        try {
+          await logAuditEvent(db, invalidDepthAudit);
+        } catch (auditError) {
+          console.error('[Audit] failed to log invalid call_depth rejection', auditError);
+        }
+
+        set.status = 400;
+        return {
+          success: false,
+          error: 'INVALID_CALL_DEPTH',
+        };
+      }
+
       const payload: TaskResultPayload = {
         status: body.status as TaskResultStatus,
         output: body.output,
@@ -83,6 +112,7 @@ export const resultsRoute = (app: Elysia): Elysia => {
         task_id: body.task_id,
         status: payload.status,
         result_uri: taskResult.result_uri,
+        call_depth: callDepth.depth,
       };
 
       if (taskResult.result_error) {
@@ -114,6 +144,7 @@ export const resultsRoute = (app: Elysia): Elysia => {
       body: ResultsRequestSchema,
       response: {
         200: ResultSuccessSchema,
+        400: GenericErrorSchema,
         404: ResultNotFoundSchema,
         500: GenericErrorSchema,
       },
