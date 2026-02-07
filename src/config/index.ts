@@ -5,7 +5,6 @@
  */
 import { parse } from '@iarna/toml';
 import { readFileSync, existsSync } from 'fs';
-import { join } from 'path';
 
 export interface CoreConfig {
     server: {
@@ -19,6 +18,9 @@ export interface CoreConfig {
     security: {
         jwt_algorithm: string;
         jwt_secret: string;
+        jwt_sign_secret: string;
+        jwt_verify_secrets: string[];
+        jwt_rotation_grace_seconds: number;
         access_token_ttl: number;
         refresh_token_ttl: number;
         bootstrap_token_ttl: number;
@@ -36,6 +38,47 @@ const CONFIG_PATHS = [
     './config.toml',
     '/etc/meristem/config.toml',
 ];
+
+const parseSecretList = (value: string | undefined): string[] => {
+    if (!value) {
+        return [];
+    }
+    return value
+        .split(',')
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0);
+};
+
+const parseNumber = (value: string | undefined, fallback: number): number => {
+    if (!value) {
+        return fallback;
+    }
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const normalizeVerifySecrets = (
+    signSecret: string,
+    configuredVerifySecrets: readonly string[],
+): string[] => {
+    const seen = new Set<string>();
+    const normalized: string[] = [];
+
+    const pushUnique = (secret: string): void => {
+        if (!secret || seen.has(secret)) {
+            return;
+        }
+        seen.add(secret);
+        normalized.push(secret);
+    };
+
+    pushUnique(signSecret);
+    for (const secret of configuredVerifySecrets) {
+        pushUnique(secret);
+    }
+
+    return normalized;
+};
 
 /**
  * 加载配置文件
@@ -58,6 +101,25 @@ export function loadConfig(): CoreConfig {
         fileConfig = parse(content) as unknown as Partial<CoreConfig>;
     }
 
+    const fileSecurity = fileConfig.security;
+    const legacyJwtSecret =
+        process.env.MERISTEM_SECURITY_JWT_SECRET ??
+        fileSecurity?.jwt_secret ??
+        process.env.JWT_SECRET ??
+        '';
+    const signSecret =
+        process.env.MERISTEM_SECURITY_JWT_SIGN_SECRET ??
+        fileSecurity?.jwt_sign_secret ??
+        legacyJwtSecret;
+    const envVerifySecrets = parseSecretList(process.env.MERISTEM_SECURITY_JWT_VERIFY_SECRETS);
+    const fileVerifySecrets = Array.isArray(fileSecurity?.jwt_verify_secrets)
+        ? fileSecurity.jwt_verify_secrets.filter((item): item is string => typeof item === 'string' && item.length > 0)
+        : [];
+    const verifySecrets = normalizeVerifySecrets(
+        signSecret,
+        envVerifySecrets.length > 0 ? envVerifySecrets : fileVerifySecrets,
+    );
+
     // 合并默认值和文件配置
     const config: CoreConfig = {
         server: {
@@ -69,11 +131,17 @@ export function loadConfig(): CoreConfig {
             mongo_uri: process.env.MERISTEM_DATABASE_MONGO_URI ?? fileConfig.database?.mongo_uri ?? 'mongodb://localhost:27017/meristem',
         },
         security: {
-            jwt_algorithm: fileConfig.security?.jwt_algorithm ?? 'HS256',
-            jwt_secret: process.env.MERISTEM_SECURITY_JWT_SECRET ?? fileConfig.security?.jwt_secret ?? '',
-            access_token_ttl: fileConfig.security?.access_token_ttl ?? 3600,
-            refresh_token_ttl: fileConfig.security?.refresh_token_ttl ?? 604800,
-            bootstrap_token_ttl: fileConfig.security?.bootstrap_token_ttl ?? 1800,
+            jwt_algorithm: fileSecurity?.jwt_algorithm ?? 'HS256',
+            jwt_secret: signSecret,
+            jwt_sign_secret: signSecret,
+            jwt_verify_secrets: verifySecrets,
+            jwt_rotation_grace_seconds: parseNumber(
+                process.env.MERISTEM_SECURITY_JWT_ROTATION_GRACE_SECONDS,
+                fileSecurity?.jwt_rotation_grace_seconds ?? 86400,
+            ),
+            access_token_ttl: fileSecurity?.access_token_ttl ?? 3600,
+            refresh_token_ttl: fileSecurity?.refresh_token_ttl ?? 604800,
+            bootstrap_token_ttl: fileSecurity?.bootstrap_token_ttl ?? 1800,
         },
         logging: {
             level: process.env.MERISTEM_LOGGING_LEVEL ?? fileConfig.logging?.level ?? 'info',
@@ -100,11 +168,25 @@ export function getNatsUrl(): string {
 }
 
 /**
- * Get JWT secret from loaded configuration
+ * 兼容旧接口，返回签发密钥
  */
 export function getJwtSecret(): string {
+    return getJwtSignSecret();
+}
+
+export function getJwtSignSecret(): string {
     const config = loadConfig();
-    return config.security.jwt_secret;
+    return config.security.jwt_sign_secret;
+}
+
+export function getJwtVerifySecrets(): readonly string[] {
+    const config = loadConfig();
+    return config.security.jwt_verify_secrets;
+}
+
+export function getJwtRotationGraceSeconds(): number {
+    const config = loadConfig();
+    return config.security.jwt_rotation_grace_seconds;
 }
 
 /**

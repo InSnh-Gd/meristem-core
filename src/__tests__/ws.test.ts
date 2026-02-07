@@ -1,5 +1,6 @@
-import { expect, test } from 'bun:test';
+import { afterEach, expect, test } from 'bun:test';
 import type { Elysia } from 'elysia';
+import { SignJWT } from 'jose';
 import {
   createWebSocketManager,
   wsRoute,
@@ -7,6 +8,37 @@ import {
   type WsHandlers,
   type WsAuthContext,
 } from '../routes/ws';
+
+const originalMeristemJwtSignSecret = process.env.MERISTEM_SECURITY_JWT_SIGN_SECRET;
+const originalMeristemJwtVerifySecrets = process.env.MERISTEM_SECURITY_JWT_VERIFY_SECRETS;
+const originalMeristemJwtSecret = process.env.MERISTEM_SECURITY_JWT_SECRET;
+const originalJwtSecret = process.env.JWT_SECRET;
+
+afterEach((): void => {
+  if (originalMeristemJwtSignSecret === undefined) {
+    delete process.env.MERISTEM_SECURITY_JWT_SIGN_SECRET;
+  } else {
+    process.env.MERISTEM_SECURITY_JWT_SIGN_SECRET = originalMeristemJwtSignSecret;
+  }
+
+  if (originalMeristemJwtVerifySecrets === undefined) {
+    delete process.env.MERISTEM_SECURITY_JWT_VERIFY_SECRETS;
+  } else {
+    process.env.MERISTEM_SECURITY_JWT_VERIFY_SECRETS = originalMeristemJwtVerifySecrets;
+  }
+
+  if (originalMeristemJwtSecret === undefined) {
+    delete process.env.MERISTEM_SECURITY_JWT_SECRET;
+  } else {
+    process.env.MERISTEM_SECURITY_JWT_SECRET = originalMeristemJwtSecret;
+  }
+
+  if (originalJwtSecret === undefined) {
+    delete process.env.JWT_SECRET;
+  } else {
+    process.env.JWT_SECRET = originalJwtSecret;
+  }
+});
 
 const allowToken = async (token: string): Promise<WsAuthContext | null> => {
   if (!token.startsWith('valid')) {
@@ -202,6 +234,29 @@ test('wsRoute registers handlers and enforces token from query on open', async (
   await Bun.sleep(0);
   expect(acceptedClient.closeCalls).toBe(0);
   expect(JSON.parse(acceptedClient.sent[0])).toMatchObject({
+    type: 'ACK',
+    action: 'CONNECTED',
+  });
+});
+
+test('default ws token validator accepts token signed by old secret during rotation', async (): Promise<void> => {
+  process.env.MERISTEM_SECURITY_JWT_SIGN_SECRET = 'new-sign-secret';
+  process.env.MERISTEM_SECURITY_JWT_VERIFY_SECRETS = 'new-sign-secret,old-verify-secret';
+
+  const token = await new SignJWT({
+    sub: 'user-ws',
+    type: 'USER',
+    permissions: ['node:read'],
+    exp: Math.floor(Date.now() / 1000) + 120,
+  })
+    .setProtectedHeader({ alg: 'HS256' })
+    .sign(new TextEncoder().encode('old-verify-secret'));
+
+  const manager = createWebSocketManager();
+  const client = createMockConnection('default-validator', token);
+
+  expect(await manager.connect(client.connection, token)).toBe(true);
+  expect(JSON.parse(client.sent[0])).toMatchObject({
     type: 'ACK',
     action: 'CONNECTED',
   });

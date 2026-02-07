@@ -1,7 +1,7 @@
 import { Elysia } from 'elysia';
-import { SignJWT, jwtVerify } from 'jose';
+import { jwtVerify } from 'jose';
 import { createLogger } from '../utils/logger';
-import { getJwtSecret } from '../config';
+import { getJwtVerifySecrets } from '../config';
 import { createTraceContext, type TraceContext } from '../utils/trace-context';
 
 /**
@@ -58,52 +58,56 @@ const formatError = (error: unknown): string =>
  * 验证 JWT Token
  *
  * 使用 HS256 算法验证 JWT Token
- * 密钥从环境变量 JWT_SECRET 获取
+ * 密钥列表由配置提供（支持轮换期多密钥并行验证）
  *
  * @param token - JWT Token 字符串
  * @returns 验证后的 Payload，如果验证失败则返回 null
  */
-const verifyJwtToken = async (
+export const verifyJwtToken = async (
   traceContext: TraceContext,
   token: string
 ): Promise<JwtPayload | null> => {
   const logger = createLogger(traceContext);
-  const jwtSecret = process.env.JWT_SECRET || getJwtSecret();
+  const jwtSecrets = getJwtVerifySecrets();
 
-  if (!jwtSecret) {
-    logger.error('[Auth] JWT_SECRET environment variable not set');
+  if (jwtSecrets.length === 0) {
+    logger.error('[Auth] JWT verify secret list is empty');
     return null;
   }
 
-  try {
-    const secretKey = new TextEncoder().encode(jwtSecret);
+  for (const jwtSecret of jwtSecrets) {
+    try {
+      const secretKey = new TextEncoder().encode(jwtSecret);
+      const { payload } = await jwtVerify(token, secretKey);
 
-    const { payload } = await jwtVerify(token, secretKey);
+      if (
+        !payload.sub ||
+        !payload.type ||
+        !payload.permissions ||
+        !Array.isArray(payload.permissions) ||
+        typeof payload.exp !== 'number'
+      ) {
+        logger.error('[Auth] Invalid JWT payload structure');
+        return null;
+      }
 
-    if (
-      !payload.sub ||
-      !payload.type ||
-      !payload.permissions ||
-      !Array.isArray(payload.permissions) ||
-      typeof payload.exp !== 'number'
-    ) {
-      logger.error('[Auth] Invalid JWT payload structure');
-      return null;
+      const now = Math.floor(Date.now() / 1000);
+      if (payload.exp < now) {
+        logger.error('[Auth] JWT token expired');
+        return null;
+      }
+
+      return payload as unknown as JwtPayload;
+    } catch {
+      // 尝试下一个密钥，支持轮换宽限期内的旧 token。
     }
-
-    const now = Math.floor(Date.now() / 1000);
-    if (payload.exp < now) {
-      logger.error('[Auth] JWT token expired');
-      return null;
-    }
-
-    return payload as unknown as JwtPayload;
-  } catch (error) {
-    logger.error('[Auth] JWT verification failed:', {
-      error: formatError(error),
-    });
-    return null;
   }
+
+  logger.error('[Auth] JWT verification failed for all configured secrets', {
+    secretCount: jwtSecrets.length,
+    error: formatError('NO_MATCHING_SECRET'),
+  });
+  return null;
 };
 
 /**

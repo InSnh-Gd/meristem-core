@@ -1,25 +1,26 @@
 import bcrypt from 'bcrypt';
 import type { Db } from 'mongodb';
 import { jwt as createJwtPlugin } from '@elysiajs/jwt';
-import { getJwtSecret } from '../config';
+import { getJwtSignSecret } from '../config';
 import { USERS_COLLECTION, type UserDocument } from '../db/collections';
 
 const JWT_EXPIRATION_SECONDS = 24 * 60 * 60;
 
-let jwtSigner: ReturnType<typeof createJwtPlugin> | null = null;
+let jwtSignerState: { signer: ReturnType<typeof createJwtPlugin>; secret: string } | null = null;
 
 const getJwtSigner = (): ReturnType<typeof createJwtPlugin> => {
-  if (jwtSigner) {
-    return jwtSigner;
-  }
-
-  const secret = getJwtSecret();
+  const secret = getJwtSignSecret();
   if (!secret) {
     throw new Error('JWT secret is not configured');
   }
 
-  jwtSigner = createJwtPlugin({ secret });
-  return jwtSigner;
+  if (jwtSignerState && jwtSignerState.secret === secret) {
+    return jwtSignerState.signer;
+  }
+
+  const signer = createJwtPlugin({ secret });
+  jwtSignerState = { signer, secret };
+  return signer;
 };
 
 /**

@@ -1,7 +1,7 @@
 import type { Elysia } from 'elysia';
-import { jwtVerify } from 'jose';
-import { getJwtSecret, loadConfig } from '../config';
-import { generateTraceId } from '../utils/trace-context';
+import { loadConfig } from '../config';
+import { verifyJwtToken } from '../middleware/auth';
+import { createTraceContext, generateTraceId } from '../utils/trace-context';
 
 export type WsMessageType = 'SUBSCRIBE' | 'UNSUBSCRIBE' | 'PING';
 
@@ -85,26 +85,25 @@ const defaultTokenValidator = async (token: string): Promise<WsAuthContext | nul
     return null;
   }
 
-  const secret = getJwtSecret();
-  if (!secret) {
+  const traceId = generateTraceId();
+  const payload = await verifyJwtToken(
+    createTraceContext({
+      traceId,
+      nodeId: 'core',
+      source: 'ws-auth',
+    }),
+    token,
+  );
+  if (!payload || typeof payload.sub !== 'string' || payload.sub.length === 0) {
     return null;
   }
 
-  try {
-    const { payload } = await jwtVerify(token, new TextEncoder().encode(secret));
-    if (typeof payload.sub !== 'string' || payload.sub.length === 0) {
-      return null;
-    }
-
-    const permissions = isStringArray(payload.permissions) ? payload.permissions : [];
-    return {
-      subject: payload.sub,
-      permissions,
-      traceId: generateTraceId(),
-    };
-  } catch {
-    return null;
-  }
+  const permissions = isStringArray(payload.permissions) ? payload.permissions : [];
+  return {
+    subject: payload.sub,
+    permissions,
+    traceId,
+  };
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => {
