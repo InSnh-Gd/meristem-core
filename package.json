@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
-    "build": "bun build src/index.ts --outdir dist --target bun"
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "test:integration": "NATS_URL=nats://localhost:4222 bun test --test-name-pattern '.*@integration.*'"
   },
   "dependencies": {
     "@elysiajs/jwt": "^1.4.0",

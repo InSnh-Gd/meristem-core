@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'bun:test';
+import type { NatsConnection } from 'nats';
 import { createNatsTransport, type LogEnvelope } from '../utils/nats-transport';
 
 const createEnvelope = (overrides: Partial<LogEnvelope> = {}): LogEnvelope => {
@@ -16,15 +17,28 @@ const createEnvelope = (overrides: Partial<LogEnvelope> = {}): LogEnvelope => {
   return Object.freeze({ ...base, ...overrides, meta });
 };
 
+type TestConnection = Pick<NatsConnection, 'publish' | 'jetstreamManager'>;
+type JetStreamManagerLike = Awaited<ReturnType<NatsConnection['jetstreamManager']>>;
+
+const createConnection = (
+  publishCalls: Array<readonly [string, Uint8Array]>,
+  jetStreamAvailable: boolean,
+): TestConnection => ({
+  publish: async (subject: string, payload: Uint8Array): Promise<void> => {
+    publishCalls.push([subject, payload]);
+  },
+  jetstreamManager: async (): Promise<JetStreamManagerLike> => {
+    if (!jetStreamAvailable) {
+      throw new Error('JetStream not enabled');
+    }
+    return {} as JetStreamManagerLike;
+  },
+});
+
 describe('NATS Transport', () => {
   it('publishes each entry and routes subjects correctly', async () => {
     const publishCalls: Array<readonly [string, Uint8Array]> = [];
-    const connection = {
-      publish: async (subject: string, payload: Uint8Array): Promise<void> => {
-        publishCalls.push([subject, payload]);
-      },
-      jetstreamManager: async (): Promise<unknown> => ({}),
-    };
+    const connection = createConnection(publishCalls, true);
 
     const transport = createNatsTransport({
       getConnection: async () => connection,
@@ -53,12 +67,7 @@ describe('NATS Transport', () => {
 
   it('flushes partial batches after timeout', async () => {
     const publishCalls: Array<readonly [string, Uint8Array]> = [];
-    const connection = {
-      publish: async (subject: string, payload: Uint8Array): Promise<void> => {
-        publishCalls.push([subject, payload]);
-      },
-      jetstreamManager: async (): Promise<unknown> => ({}),
-    };
+    const connection = createConnection(publishCalls, true);
 
     const transport = createNatsTransport({
       getConnection: async () => connection,
@@ -77,12 +86,7 @@ describe('NATS Transport', () => {
 
   it('drops oldest entries when buffer exceeds max bytes', async () => {
     const publishCalls: Array<readonly [string, Uint8Array]> = [];
-    const connection = {
-      publish: async (subject: string, payload: Uint8Array): Promise<void> => {
-        publishCalls.push([subject, payload]);
-      },
-      jetstreamManager: async (): Promise<unknown> => ({}),
-    };
+    const connection = createConnection(publishCalls, true);
 
     const encoder = new TextEncoder();
     const baseLog = createEnvelope({ content: 'log-000' });
@@ -123,14 +127,7 @@ describe('NATS Transport', () => {
 
   it('falls back to core publish when JetStream is unavailable', async () => {
     const publishCalls: Array<readonly [string, Uint8Array]> = [];
-    const connection = {
-      publish: async (subject: string, payload: Uint8Array): Promise<void> => {
-        publishCalls.push([subject, payload]);
-      },
-      jetstreamManager: async (): Promise<unknown> => {
-        throw new Error('JetStream not enabled');
-      },
-    };
+    const connection = createConnection(publishCalls, false);
 
     const transport = createNatsTransport({
       getConnection: async () => connection,

@@ -3,6 +3,8 @@ export const TASKS_COLLECTION = 'tasks';
 export const PLUGINS_COLLECTION = 'plugins';
 export const USERS_COLLECTION = 'users';
 
+export type SduiVersion = `${number}.${number}`;
+
 /**
  * Node 相关类型定义，确保所有节点数据遵循统一字段约束
  */
@@ -119,6 +121,7 @@ export type PluginUI = {
   entry?: string;
   mode: 'SDUI' | 'ESM';
   icon?: string;
+  sdui_version?: SduiVersion;
 };
 
 export type PluginConfig = {

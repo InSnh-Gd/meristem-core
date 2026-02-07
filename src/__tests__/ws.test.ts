@@ -1,0 +1,208 @@
+import { expect, test } from 'bun:test';
+import type { Elysia } from 'elysia';
+import {
+  createWebSocketManager,
+  wsRoute,
+  type WsConnection,
+  type WsHandlers,
+  type WsAuthContext,
+} from '../routes/ws';
+
+const allowToken = async (token: string): Promise<WsAuthContext | null> => {
+  if (!token.startsWith('valid')) {
+    return null;
+  }
+
+  return {
+    subject: token,
+    permissions: ['node:read'],
+    traceId: `trace-${token}`,
+  };
+};
+
+const createMockConnection = (
+  id: string,
+  token?: string,
+): {
+  connection: WsConnection;
+  sent: string[];
+  closeCalls: number;
+} => {
+  const sent: string[] = [];
+  let closeCalls = 0;
+
+  const connection: WsConnection = {
+    id,
+    data: {
+      query: token !== undefined ? { token } : {},
+    },
+    send: (message: string): void => {
+      sent.push(message);
+    },
+    close: (): void => {
+      closeCalls += 1;
+    },
+  };
+
+  return {
+    connection,
+    sent,
+    get closeCalls(): number {
+      return closeCalls;
+    },
+  };
+};
+
+test('websocket manager rejects missing or invalid token on connect', async (): Promise<void> => {
+  const manager = createWebSocketManager(async (token) =>
+    token === 'valid-token'
+      ? {
+          subject: 'user-1',
+          permissions: ['node:read'],
+          traceId: 'trace-valid-token',
+        }
+      : null,
+  );
+  const missingTokenClient = createMockConnection('c1');
+
+  expect(await manager.connect(missingTokenClient.connection, undefined)).toBe(false);
+  expect(missingTokenClient.sent).toHaveLength(1);
+  expect(JSON.parse(missingTokenClient.sent[0])).toMatchObject({
+    type: 'ERROR',
+    code: 'AUTH_REQUIRED',
+  });
+
+  const invalidTokenClient = createMockConnection('c2', 'bad-token');
+  expect(await manager.connect(invalidTokenClient.connection, 'bad-token')).toBe(false);
+  expect(JSON.parse(invalidTokenClient.sent[0])).toMatchObject({
+    type: 'ERROR',
+    code: 'AUTH_INVALID',
+  });
+});
+
+test('websocket manager handles SUBSCRIBE, UNSUBSCRIBE and PING protocol', async (): Promise<void> => {
+  const manager = createWebSocketManager(async (token) =>
+    token === 'valid-token'
+      ? {
+          subject: 'user-1',
+          permissions: ['node:read'],
+          traceId: 'trace-valid-token',
+        }
+      : null,
+  );
+  const client = createMockConnection('c1', 'valid-token');
+
+  expect(await manager.connect(client.connection, 'valid-token')).toBe(true);
+
+  manager.handleMessage(client.connection, JSON.stringify({ type: 'SUBSCRIBE', topic: 'task.1.status' }));
+  manager.handleMessage(client.connection, JSON.stringify({ type: 'PING' }));
+  manager.handleMessage(client.connection, JSON.stringify({ type: 'UNSUBSCRIBE', topic: 'task.1.status' }));
+
+  expect(JSON.parse(client.sent[0])).toMatchObject({
+    type: 'ACK',
+    action: 'CONNECTED',
+  });
+  expect(JSON.parse(client.sent[1])).toMatchObject({
+    type: 'ACK',
+    action: 'SUBSCRIBE',
+    topic: 'task.1.status',
+  });
+  expect(JSON.parse(client.sent[2])).toMatchObject({
+    type: 'ACK',
+    action: 'PONG',
+  });
+  expect(JSON.parse(client.sent[3])).toMatchObject({
+    type: 'ACK',
+    action: 'UNSUBSCRIBE',
+    topic: 'task.1.status',
+  });
+
+  expect(manager.broadcast('task.1.status', { state: 'running' })).toBe(0);
+});
+
+test('websocket manager broadcasts PUSH payload to subscribed topic only', async (): Promise<void> => {
+  const manager = createWebSocketManager(allowToken);
+  const taskClient = createMockConnection('task-client', 'valid-task');
+  const statusClient = createMockConnection('status-client', 'valid-status');
+
+  expect(await manager.connect(taskClient.connection, 'valid-task')).toBe(true);
+  expect(await manager.connect(statusClient.connection, 'valid-status')).toBe(true);
+
+  manager.handleMessage(taskClient.connection, JSON.stringify({ type: 'SUBSCRIBE', topic: 'task.1.status' }));
+  manager.handleMessage(statusClient.connection, JSON.stringify({ type: 'SUBSCRIBE', topic: 'node.a.status' }));
+
+  const delivered = manager.broadcast('task.1.status', { taskId: 't1', status: 'done' });
+  expect(delivered).toBe(1);
+
+  const taskPush = JSON.parse(taskClient.sent[2]);
+  expect(taskPush).toMatchObject({
+    type: 'PUSH',
+    topic: 'task.1.status',
+    payload: { taskId: 't1', status: 'done' },
+    trace_id: 'trace-valid-task',
+  });
+
+  expect(statusClient.sent).toHaveLength(2);
+});
+
+test('websocket manager rejects disallowed topic subscription', async (): Promise<void> => {
+  const manager = createWebSocketManager(allowToken);
+  const client = createMockConnection('restricted', 'valid-restricted');
+
+  expect(await manager.connect(client.connection, 'valid-restricted')).toBe(true);
+  manager.handleMessage(client.connection, JSON.stringify({ type: 'SUBSCRIBE', topic: 'logs.node-1' }));
+
+  expect(JSON.parse(client.sent[1])).toMatchObject({
+    type: 'ERROR',
+    code: 'INVALID_TOPIC',
+  });
+});
+
+test('wsRoute registers handlers and enforces token from query on open', async (): Promise<void> => {
+  let registeredPath = '';
+  let handlers: WsHandlers | null = null;
+
+  const mockApp = {
+    ws: (path: string, candidateHandlers: WsHandlers): void => {
+      registeredPath = path;
+      handlers = candidateHandlers;
+    },
+  };
+
+  wsRoute(mockApp as unknown as Elysia, {
+    wsPath: '/ws-test',
+    validateToken: async (token) =>
+      token === 'valid-token'
+        ? {
+            subject: 'user-1',
+            permissions: ['node:read'],
+            traceId: 'trace-valid-token',
+          }
+        : null,
+  });
+
+  expect(registeredPath).toBe('/ws-test');
+  expect(handlers).not.toBeNull();
+  if (!handlers) {
+    throw new Error('ws handlers should be registered');
+  }
+  const activeHandlers: WsHandlers = handlers;
+
+  const blockedClient = createMockConnection('blocked');
+  activeHandlers.open(blockedClient.connection);
+  await Bun.sleep(0);
+  expect(blockedClient.closeCalls).toBe(1);
+  expect(JSON.parse(blockedClient.sent[0])).toMatchObject({
+    type: 'ERROR',
+    code: 'AUTH_REQUIRED',
+  });
+
+  const acceptedClient = createMockConnection('accepted', 'valid-token');
+  activeHandlers.open(acceptedClient.connection);
+  await Bun.sleep(0);
+  expect(acceptedClient.closeCalls).toBe(0);
+  expect(JSON.parse(acceptedClient.sent[0])).toMatchObject({
+    type: 'ACK',
+    action: 'CONNECTED',
+  });
+});

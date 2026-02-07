@@ -1,7 +1,8 @@
 import { Elysia } from 'elysia';
 import { SignJWT, jwtVerify } from 'jose';
 import { createLogger } from '../utils/logger';
-import type { TraceContext } from '../utils/trace-context';
+import { getJwtSecret } from '../config';
+import { createTraceContext, type TraceContext } from '../utils/trace-context';
 
 /**
  * JWT Payload 类型定义
@@ -67,7 +68,7 @@ const verifyJwtToken = async (
   token: string
 ): Promise<JwtPayload | null> => {
   const logger = createLogger(traceContext);
-  const jwtSecret = process.env.JWT_SECRET;
+  const jwtSecret = process.env.JWT_SECRET || getJwtSecret();
 
   if (!jwtSecret) {
     logger.error('[Auth] JWT_SECRET environment variable not set');
@@ -121,7 +122,7 @@ export const requireAuth = async (context: {
   headers: { authorization?: string };
   set: { status?: unknown };
   store: Record<string, unknown>;
-  traceContext: TraceContext;
+  traceContext?: TraceContext;
 }) => {
   const authHeader = context.headers.authorization ?? null;
   const token = extractBearerToken(authHeader);
@@ -129,20 +130,23 @@ export const requireAuth = async (context: {
   if (!token) {
     context.set.status = 401;
     return {
-      success: false,
+      success: false as const,
       error: 'UNAUTHORIZED',
-      message: 'Missing or invalid Authorization header',
     };
   }
 
-  const payload = await verifyJwtToken(context.traceContext, token);
+  const traceContext = context.traceContext ?? createTraceContext({
+    traceId: 'auth-fallback',
+    nodeId: 'core',
+    source: 'auth',
+  });
+  const payload = await verifyJwtToken(traceContext, token);
 
   if (!payload) {
     context.set.status = 401;
     return {
-      success: false,
+      success: false as const,
       error: 'UNAUTHORIZED',
-      message: 'Invalid or expired JWT token',
     };
   }
 

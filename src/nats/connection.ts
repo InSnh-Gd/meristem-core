@@ -1,5 +1,4 @@
 import { connect, NatsConnection, Subscription, Msg } from 'nats';
-import { createLogger } from '../utils/logger';
 import { createTraceContext, type TraceContext } from '../utils/trace-context';
 
 /**
@@ -38,6 +37,11 @@ const resolveTraceContext = (traceContext?: TraceContext): TraceContext =>
 const formatError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
+const getLogger = async (traceContext: TraceContext) => {
+  const { createLogger } = await import('../utils/logger');
+  return createLogger(traceContext);
+};
+
 /**
  * 纯函数：建立 NATS 连接
  * 多次调用返回同一实例，避免重复连接
@@ -50,7 +54,7 @@ export const connectNats = async (
     return nc;
   }
 
-  const logger = createLogger(traceContext);
+  const logger = await getLogger(traceContext);
   const config = resolveConfig(override);
   nc = await connect({
     servers: config.servers,
@@ -90,7 +94,7 @@ export const closeNats = async (traceContext?: TraceContext): Promise<void> => {
     return;
   }
 
-  const logger = createLogger(resolveTraceContext(traceContext));
+  const logger = await getLogger(resolveTraceContext(traceContext));
   try {
     await nc.close();
     logger.info('[NATS] 连接已关闭');
@@ -113,7 +117,7 @@ export const subscribe = async (
   callback: (msg: Msg) => void | Promise<void>,
   queue?: string
 ): Promise<Subscription> => {
-  const logger = createLogger(traceContext);
+  const logger = await getLogger(traceContext);
   const conn = await getNats(traceContext);
   const sub = conn.subscribe(subject, { queue });
   logger.info(`[NATS] 已订阅主题: ${subject}${queue ? ` (队列: ${queue})` : ''}`);

@@ -13,8 +13,8 @@ type TraceRouteHandler = (ctx: TraceContextEnabledContext) => unknown;
 const buildApp = (handler?: TraceRouteHandler) => {
   const app = new Elysia();
   app.use(traceMiddleware());
-  app.get('/trace', (ctx: TraceContextEnabledContext) =>
-    handler ? handler(ctx) : readTraceContext(ctx),
+  app.get('/trace', (ctx) =>
+    handler ? handler(ctx as TraceContextEnabledContext) : readTraceContext(ctx as TraceContextEnabledContext),
   );
   return app;
 };

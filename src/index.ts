@@ -11,6 +11,9 @@ import { handleHeartbeatMessage, startHeartbeatMonitor } from './services/heartb
 import { setupJetstreamLogs } from './services/jetstream-setup';
 import { createLogger } from './utils/logger';
 import { createTraceContext } from './utils/trace-context';
+import { loadConfig } from './config';
+import { wsRoute } from './routes/ws';
+import { traceMiddleware } from './middleware/trace';
 
 export type AppConfig = {
   port?: number;
@@ -44,6 +47,7 @@ export const createApp = (config: AppConfig = {}): Elysia => {
  */
 export const startApp = async (config: AppConfig = {}): Promise<Elysia> => {
   const port = resolvePort(config);
+  const coreConfig = loadConfig();
   const initTraceContext = createTraceContext({
     traceId: 'init',
     nodeId: 'core',
@@ -76,12 +80,14 @@ export const startApp = async (config: AppConfig = {}): Promise<Elysia> => {
   await startHeartbeatMonitor(db, heartbeatTraceContext);
 
   const app = createApp(config);
+  app.use(traceMiddleware());
   joinRoute(app);
   auditRoute(app);
   bootstrapRoute(app);
   authRoute(app);
   tasksRoute(app);
   resultsRoute(app);
+  wsRoute(app, { wsPath: coreConfig.server.ws_path });
 
   await app.listen({ port });
   initLogger.info(`[Core] meristem-core listening on port ${port}`);

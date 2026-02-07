@@ -58,5 +58,5 @@ export const submitResult = async (
     { returnDocument: 'after' }
   );
 
-  return updated.value ?? null;
+  return updated ?? null;
 };
