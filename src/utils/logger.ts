@@ -2,6 +2,7 @@ import pino from 'pino';
 import { createNatsTransport } from './nats-transport';
 import { getNatsIfConnected } from '../nats/connection';
 import type { TraceContext } from './trace-context.js';
+import type { LogEnvelope, LogLevel } from 'meristem-shared';
 
 // Module-level singleton to avoid per-logger instances.
 const sharedNatsTransport = createNatsTransport({
@@ -13,24 +14,6 @@ const sharedNatsTransport = createNatsTransport({
     return connection;
   },
 });
-
-/**
- * Log levels as defined in LOG_PROTOCOL.md
- */
-type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' | 'FATAL';
-
-/**
- * Log envelope format as defined in LOG_PROTOCOL.md
- */
-type LogEnvelope = Readonly<{
-  readonly ts: number;
-  readonly level: LogLevel;
-  readonly node_id: string;
-  readonly source: string;
-  readonly trace_id: string;
-  readonly content: string;
-  readonly meta: Record<string, unknown>;
-}>;
 
 /**
  * Pino log level mapping to LOG_PROTOCOL levels

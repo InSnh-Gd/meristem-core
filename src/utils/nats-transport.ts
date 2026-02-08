@@ -1,5 +1,6 @@
 import type { NatsConnection } from 'nats';
 import { getNats } from '../nats/connection';
+import type { LogEnvelope, LogLevel } from 'meristem-shared';
 
 const DEFAULT_MAX_BUFFER_BYTES = 5 * 1024 * 1024;
 const DEFAULT_MIN_BATCH_SIZE = 50;
@@ -9,17 +10,7 @@ const DEFAULT_FLUSH_INTERVAL_MS = 100;
 const SYSTEM_TOPIC_PREFIX = 'meristem.v1.logs.sys.';
 const TASK_TOPIC_PREFIX = 'meristem.v1.logs.task.';
 
-type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' | 'FATAL';
-
-export type LogEnvelope = Readonly<{
-  readonly ts: number;
-  readonly level: LogLevel;
-  readonly node_id: string;
-  readonly source: string;
-  readonly trace_id: string;
-  readonly content: string;
-  readonly meta: Record<string, unknown>;
-}>;
+export type { LogEnvelope };
 
 type NatsConnectionLike = Pick<NatsConnection, 'publish' | 'jetstreamManager'>;
 
