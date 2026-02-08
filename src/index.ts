@@ -69,7 +69,9 @@ export const startApp = async (config: AppConfig = {}): Promise<Elysia> => {
     source: 'heartbeat',
   });
 
-  const db = await connectDb(initTraceContext);
+  const db = await connectDb(initTraceContext, {
+    uri: coreConfig.database.mongo_uri,
+  });
   (global as { db?: unknown }).db = db;
 
   await connectNats(initTraceContext);

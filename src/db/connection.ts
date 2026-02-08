@@ -3,16 +3,52 @@ import { createLogger } from '../utils/logger';
 import type { TraceContext } from '../utils/trace-context';
 
 type MongoOptions = MongoClientOptions & Record<string, unknown>;
+type EnvMap = Readonly<Record<string, string | undefined>>;
 
-type MongoConfig = {
+type MongoConfigInput = {
+  uri: string;
+  dbName?: string;
+  options?: MongoOptions;
+};
+
+export type MongoConfig = {
   uri: string;
   dbName: string;
   options?: MongoOptions;
 };
 
-const resolveConfig = (override: Partial<MongoConfig> = {}): MongoConfig => {
-  const uri = override.uri ?? process.env.MONGO_URI ?? 'mongodb://localhost:27017/meristem';
-  const dbName = override.dbName ?? process.env.MONGO_DB_NAME ?? 'meristem';
+const inferDbNameFromUri = (uri: string): string | undefined => {
+  const schemeIndex = uri.indexOf('://');
+  if (schemeIndex < 0) {
+    return undefined;
+  }
+
+  const authorityAndPath = uri.slice(schemeIndex + 3);
+  const pathIndex = authorityAndPath.indexOf('/');
+  if (pathIndex < 0) {
+    return undefined;
+  }
+
+  const pathAndQuery = authorityAndPath.slice(pathIndex + 1);
+  const path = pathAndQuery.split('?')[0] ?? '';
+  return path.length > 0 ? path : undefined;
+};
+
+export const resolveMongoConfig = (
+  override: Partial<MongoConfigInput> = {},
+  env: EnvMap = process.env,
+): MongoConfig => {
+  const uri =
+    override.uri ??
+    env.MERISTEM_DATABASE_MONGO_URI ??
+    env.MONGO_URI ??
+    'mongodb://localhost:27017/meristem';
+  const dbName =
+    override.dbName ??
+    env.MERISTEM_DATABASE_MONGO_DB_NAME ??
+    env.MONGO_DB_NAME ??
+    inferDbNameFromUri(uri) ??
+    'meristem';
   return { uri, dbName, options: override.options };
 };
 
@@ -24,12 +60,12 @@ let db: Db | null = null;
  */
 export const connectDb = async (
   traceContext: TraceContext,
-  override: Partial<MongoConfig> = {}
+  override: Partial<MongoConfigInput> = {}
 ): Promise<Db> => {
   if (db) {
     return db;
   }
-  const config = resolveConfig(override);
+  const config = resolveMongoConfig(override);
   client = new MongoClient(config.uri, config.options);
   await client.connect();
   db = client.db(config.dbName);
