@@ -1,8 +1,10 @@
 import { Elysia, t } from 'elysia';
 import { Db } from 'mongodb';
+import type { NodePersona } from '@insnh-gd/meristem-shared';
 import { NodeDocument, NODES_COLLECTION, type NodeHardwareProfile } from '../db/collections';
 import { extractTraceId, generateTraceId } from '../utils/trace-context';
 import { DEFAULT_ORG_ID } from '../services/bootstrap';
+import { PERSONA_AGENT, PERSONA_GIG } from '../utils/persona';
 import {
   logAuditEvent,
   type AuditEventInput,
@@ -11,10 +13,10 @@ import {
 
 /**
  * Persona 类型定义：节点角色标识
- * - AGENT: 运行在 Core 宿主机上的本地 Agent
- * - GIG: 远程工作节点
+ * - AGENT: 常驻节点人设，具备持久身份，可部署在任意节点（Node0 只是其中一个特例）
+ * - GIG: 任务驱动的人设，通常用于短生命周期的计算执行
  */
-export type Persona = 'AGENT' | 'GIG';
+export type Persona = NodePersona;
 
 const HARDWARE_HASH_PATTERN = /^[a-f0-9]{64}$/;
 
@@ -71,7 +73,7 @@ export const JoinRequestBodySchema = t.Object({
     minLength: 1,
     maxLength: 255,
   }),
-  persona: t.Union([t.Literal('AGENT'), t.Literal('GIG')], {
+  persona: t.Union([t.Literal(PERSONA_AGENT), t.Literal(PERSONA_GIG)], {
     description: '节点角色标识',
   }),
   hardware_profile: t.Optional(HardwareProfileSchema),

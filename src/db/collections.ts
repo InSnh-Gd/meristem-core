@@ -1,3 +1,5 @@
+import type { NodePersona } from '@insnh-gd/meristem-shared';
+
 export const NODES_COLLECTION = 'nodes';
 export const TASKS_COLLECTION = 'tasks';
 export const PLUGINS_COLLECTION = 'plugins';
@@ -97,7 +99,7 @@ export type NodeDocument = {
   org_id: string;
   hwid: string;
   hostname: string;
-  persona: 'AGENT' | 'GIG';
+  persona: NodePersona;
   hardware_profile?: NodeHardwareProfile;
   hardware_profile_hash?: string;
   hardware_profile_drift?: NodeHardwareProfileDrift;
