@@ -2,6 +2,9 @@ export const NODES_COLLECTION = 'nodes';
 export const TASKS_COLLECTION = 'tasks';
 export const PLUGINS_COLLECTION = 'plugins';
 export const USERS_COLLECTION = 'users';
+export const ROLES_COLLECTION = 'roles';
+export const ORGS_COLLECTION = 'orgs';
+export const INVITATIONS_COLLECTION = 'user_invitations';
 
 export type SduiVersion = `${number}.${number}`;
 
@@ -91,6 +94,7 @@ export type NodeStatus = {
 
 export type NodeDocument = {
   node_id: string;
+  org_id: string;
   hwid: string;
   hostname: string;
   persona: 'AGENT' | 'GIG';
@@ -137,6 +141,7 @@ export type TaskHandshake = {
 export type TaskDocument = {
   task_id: string;
   owner_id: string;
+  org_id: string;
   trace_id: string;
   target_node_id: string;
   type: TaskType;
@@ -181,6 +186,27 @@ export type PluginDocument = {
   updated_at: Date;
 };
 
+export type RoleDocument = {
+  role_id: string;
+  name: string;
+  description: string;
+  permissions: string[];
+  is_builtin: boolean;
+  org_id: string;
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type OrgDocument = {
+  org_id: string;
+  name: string;
+  slug: string;
+  owner_user_id: string;
+  settings: Record<string, unknown>;
+  created_at: Date;
+  updated_at: Date;
+};
+
 /**
  * User 数据类型与 Token 管理
  */
@@ -196,10 +222,25 @@ export type UserDocument = {
   user_id: string;
   username: string;
   password_hash: string;
-  is_admin: boolean;
+  role_ids: string[];
+  org_id: string;
   permissions: string[];
   permissions_v: number;
   tokens: UserToken[];
+  created_at: Date;
+  updated_at: Date;
+};
+
+export type InvitationDocument = {
+  invitation_id: string;
+  invitation_token: string;
+  username: string;
+  org_id: string;
+  role_ids: string[];
+  created_by: string;
+  status: 'pending' | 'accepted' | 'expired';
+  expires_at: Date;
+  accepted_at?: Date;
   created_at: Date;
   updated_at: Date;
 };

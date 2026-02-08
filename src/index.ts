@@ -15,6 +15,8 @@ import { createTraceContext } from './utils/trace-context';
 import { loadConfig } from './config';
 import { wsRoute } from './routes/ws';
 import { traceMiddleware } from './middleware/trace';
+import { usersRoute } from './routes/users';
+import { rolesRoute } from './routes/roles';
 
 export type AppConfig = {
   port?: number;
@@ -91,11 +93,13 @@ export const startApp = async (config: AppConfig = {}): Promise<Elysia> => {
   auditRoute(app);
   bootstrapRoute(app);
   authRoute(app);
+  usersRoute(app);
+  rolesRoute(app);
   tasksRoute(app);
   resultsRoute(app);
   wsRoute(app, { wsPath: coreConfig.server.ws_path });
 
-  await app.listen({ port });
+  app.listen({ port });
   initLogger.info(`[Core] meristem-core listening on port ${port}`);
   return app;
 };

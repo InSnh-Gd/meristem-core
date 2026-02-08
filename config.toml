@@ -10,7 +10,7 @@ mongo_uri = "mongodb://localhost:27017/meristem"
 
 [security]
 jwt_algorithm = "HS256"
-jwt_secret = ""  # 首次启动自动生成
+jwt_sign_secret = ""  # 推荐通过 MERISTEM_SECURITY_JWT_SIGN_SECRET 注入
 access_token_ttl = 3600
 refresh_token_ttl = 604800
 bootstrap_token_ttl = 1800

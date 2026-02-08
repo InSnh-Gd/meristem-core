@@ -39,35 +39,27 @@ const createAuthContextWithoutTrace = (authorization: string): Omit<RequireAuthC
   store: {},
 });
 
-const originalJwtSecret = process.env.JWT_SECRET;
-const originalMeristemJwtSecret = process.env.MERISTEM_SECURITY_JWT_SECRET;
-const originalMeristemJwtSignSecret = process.env.MERISTEM_SECURITY_JWT_SIGN_SECRET;
+const originalJwtSignSecret = process.env.MERISTEM_SECURITY_JWT_SIGN_SECRET;
 const originalMeristemJwtVerifySecrets = process.env.MERISTEM_SECURITY_JWT_VERIFY_SECRETS;
+const originalLegacyJwtSecret = process.env.MERISTEM_SECURITY_JWT_SECRET;
 
 beforeEach((): void => {
-  delete process.env.JWT_SECRET;
   delete process.env.MERISTEM_SECURITY_JWT_SECRET;
   delete process.env.MERISTEM_SECURITY_JWT_SIGN_SECRET;
   delete process.env.MERISTEM_SECURITY_JWT_VERIFY_SECRETS;
 });
 
 afterEach((): void => {
-  if (originalJwtSecret === undefined) {
-    delete process.env.JWT_SECRET;
-  } else {
-    process.env.JWT_SECRET = originalJwtSecret;
-  }
-
-  if (originalMeristemJwtSecret === undefined) {
+  if (originalLegacyJwtSecret === undefined) {
     delete process.env.MERISTEM_SECURITY_JWT_SECRET;
   } else {
-    process.env.MERISTEM_SECURITY_JWT_SECRET = originalMeristemJwtSecret;
+    process.env.MERISTEM_SECURITY_JWT_SECRET = originalLegacyJwtSecret;
   }
 
-  if (originalMeristemJwtSignSecret === undefined) {
+  if (originalJwtSignSecret === undefined) {
     delete process.env.MERISTEM_SECURITY_JWT_SIGN_SECRET;
   } else {
-    process.env.MERISTEM_SECURITY_JWT_SIGN_SECRET = originalMeristemJwtSignSecret;
+    process.env.MERISTEM_SECURITY_JWT_SIGN_SECRET = originalJwtSignSecret;
   }
 
   if (originalMeristemJwtVerifySecrets === undefined) {
@@ -149,8 +141,8 @@ test('requireAuth rejects jwt token with invalid payload shape', async (): Promi
   });
 });
 
-test('requireAuth accepts valid token when only MERISTEM_SECURITY_JWT_SECRET is configured', async (): Promise<void> => {
-  process.env.MERISTEM_SECURITY_JWT_SECRET = 'meristem-only-secret';
+test('requireAuth accepts valid token when only MERISTEM_SECURITY_JWT_SIGN_SECRET is configured', async (): Promise<void> => {
+  process.env.MERISTEM_SECURITY_JWT_SIGN_SECRET = 'meristem-only-secret';
   const now = Math.floor(Date.now() / 1000);
 
   const token = await signToken(
@@ -173,6 +165,30 @@ test('requireAuth accepts valid token when only MERISTEM_SECURITY_JWT_SECRET is 
     type: 'USER',
     permissions: ['tasks:create'],
     node_id: undefined,
+  });
+});
+
+test('requireAuth rejects token when only legacy secret env is set', async (): Promise<void> => {
+  process.env.MERISTEM_SECURITY_JWT_SECRET = 'legacy-only-secret';
+  const now = Math.floor(Date.now() / 1000);
+
+  const token = await signToken(
+    {
+      sub: 'user-legacy-only',
+      type: 'USER',
+      permissions: ['tasks:create'],
+      exp: now + 120,
+    },
+    'legacy-only-secret',
+  );
+
+  const context = createAuthContext(`Bearer ${token}`);
+  const response = await requireAuth(context);
+
+  expect(context.set.status).toBe(401);
+  expect(response).toEqual({
+    success: false,
+    error: 'UNAUTHORIZED',
   });
 });
 

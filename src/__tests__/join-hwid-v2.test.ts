@@ -190,6 +190,7 @@ test('joinRoute restores existing node when hardware profile hash matches baseli
     hardware_profile_hash?: string;
   } = {
     node_id: 'node-hash-stable',
+    org_id: 'org-default',
     hwid: 'b'.repeat(64),
     hostname: 'old-node',
     persona: 'GIG',
@@ -272,6 +273,7 @@ test('joinRoute blocks recovery when hardware profile hash drifts', async (): Pr
     hardware_profile_hash?: string;
   } = {
     node_id: 'node-hash-drift',
+    org_id: 'org-default',
     hwid: 'c'.repeat(64),
     hostname: 'drift-node',
     persona: 'GIG',
@@ -354,6 +356,7 @@ test('joinRoute writes drift audit event when hardware profile hash drifts', asy
     hardware_profile_hash?: string;
   } = {
     node_id: 'node-hash-drift-audit',
+    org_id: 'org-default',
     hwid: 'd'.repeat(64),
     hostname: 'audit-drift-node',
     persona: 'GIG',

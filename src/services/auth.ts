@@ -3,6 +3,7 @@ import type { Db } from 'mongodb';
 import { jwt as createJwtPlugin } from '@elysiajs/jwt';
 import { getJwtSignSecret } from '../config';
 import { USERS_COLLECTION, type UserDocument } from '../db/collections';
+import { SUPERADMIN_ROLE_ID } from './bootstrap';
 
 const JWT_EXPIRATION_SECONDS = 24 * 60 * 60;
 
@@ -49,13 +50,16 @@ export const generateJWT = async (user: UserDocument): Promise<string> => {
   const signer = getJwtSigner();
   const now = Math.floor(Date.now() / 1000);
   const expiresAt = now + JWT_EXPIRATION_SECONDS;
+  const roleIds = Array.isArray(user.role_ids) ? user.role_ids : [];
+  const permissions = Array.isArray(user.permissions) ? user.permissions : [];
+  const isSuperadmin = roleIds.includes(SUPERADMIN_ROLE_ID) || permissions.includes('*');
 
   const payload = {
     sub: user.user_id,
     user_id: user.user_id,
-    role: user.is_admin ? 'admin' : 'user',
+    role: isSuperadmin ? 'admin' : 'user',
     type: 'USER' as const,
-    permissions: user.permissions,
+    permissions,
     exp: expiresAt,
   };
 

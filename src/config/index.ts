@@ -19,7 +19,6 @@ export interface CoreConfig {
     };
     security: {
         jwt_algorithm: string;
-        jwt_secret: string;
         jwt_sign_secret: string;
         jwt_verify_secrets: string[];
         jwt_rotation_grace_seconds: number;
@@ -110,12 +109,7 @@ export function loadConfig(): CoreConfig {
         fileSecurity?.jwt_rotation_store_path ??
         join(process.cwd(), 'data', 'core', 'jwt-rotation.json');
     const rotationState = readJwtRotationStateSync(rotationStorePath);
-    const legacyJwtSecret =
-        process.env.MERISTEM_SECURITY_JWT_SECRET ??
-        fileSecurity?.jwt_secret ??
-        process.env.JWT_SECRET ??
-        '';
-    const fileSignSecret = fileSecurity?.jwt_sign_secret ?? legacyJwtSecret;
+    const fileSignSecret = fileSecurity?.jwt_sign_secret ?? '';
     const signSecret =
         process.env.MERISTEM_SECURITY_JWT_SIGN_SECRET ??
         rotationState?.current_sign_secret ??
@@ -146,7 +140,6 @@ export function loadConfig(): CoreConfig {
         },
         security: {
             jwt_algorithm: fileSecurity?.jwt_algorithm ?? 'HS256',
-            jwt_secret: signSecret,
             jwt_sign_secret: signSecret,
             jwt_verify_secrets: verifySecrets,
             jwt_rotation_store_path: rotationStorePath,
@@ -180,13 +173,6 @@ export function getMongoUri(): string {
  */
 export function getNatsUrl(): string {
     return process.env.MERISTEM_NATS_URL ?? 'nats://localhost:4222';
-}
-
-/**
- * 兼容旧接口，返回签发密钥
- */
-export function getJwtSecret(): string {
-    return getJwtSignSecret();
 }
 
 export function getJwtSignSecret(): string {

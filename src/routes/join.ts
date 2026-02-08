@@ -2,6 +2,7 @@ import { Elysia, t } from 'elysia';
 import { Db } from 'mongodb';
 import { NodeDocument, NODES_COLLECTION, type NodeHardwareProfile } from '../db/collections';
 import { extractTraceId, generateTraceId } from '../utils/trace-context';
+import { DEFAULT_ORG_ID } from '../services/bootstrap';
 import {
   logAuditEvent,
   type AuditEventInput,
@@ -78,6 +79,13 @@ export const JoinRequestBodySchema = t.Object({
     t.String({
       description: '硬件画像哈希（SHA-256 十六进制）',
       pattern: '^[a-f0-9]{64}$',
+    }),
+  ),
+  org_id: t.Optional(
+    t.String({
+      description: '节点所属组织 ID，默认 org-default',
+      minLength: 1,
+      maxLength: 128,
     }),
   ),
 });
@@ -203,6 +211,7 @@ export const createNode = async (
     hostname?: string;
     hardwareProfile?: NodeHardwareProfile;
     hardwareProfileHash?: string;
+    orgId?: string;
   } = {},
 ): Promise<NodeDocument> => {
   // 生成 node_id：node-{timestamp}-{random}
@@ -214,6 +223,7 @@ export const createNode = async (
 
   const newNode: NodeDocument = {
     node_id,
+    org_id: options.orgId ?? DEFAULT_ORG_ID,
     hwid,
     hostname: options.hostname ?? '',
     persona,
@@ -295,8 +305,9 @@ export const joinRoute = (app: Elysia, auditLogger: AuditLogger = logAuditEvent)
   app.post(
     '/api/v1/join',
     async ({ body, set, request }) => {
-      const { hwid, hostname, persona, hardware_profile, hardware_profile_hash } = body;
+      const { hwid, hostname, persona, hardware_profile, hardware_profile_hash, org_id } = body;
       const incomingHardwareProfile = hardware_profile as NodeHardwareProfile | undefined;
+      const incomingOrgId = typeof org_id === 'string' && org_id.length > 0 ? org_id : DEFAULT_ORG_ID;
       const incomingHashResolution = await resolveIncomingHardwareProfileHash(
         incomingHardwareProfile,
         hardware_profile_hash,
@@ -326,7 +337,7 @@ export const joinRoute = (app: Elysia, auditLogger: AuditLogger = logAuditEvent)
       let status: 'new' | 'existing' | 'pending_approval';
       let auditLevel: 'INFO' | 'WARN' = 'INFO';
       let auditContent = 'Node joined';
-      let auditMeta: Record<string, unknown> = { persona };
+      let auditMeta: Record<string, unknown> = { persona, org_id: incomingOrgId };
       const now = new Date();
 
       if (existingNode) {
@@ -357,6 +368,7 @@ export const joinRoute = (app: Elysia, auditLogger: AuditLogger = logAuditEvent)
                 $set: {
                   hostname,
                   persona,
+                  org_id: existingNode.org_id || incomingOrgId,
                   ...(incomingHardwareProfile ? { hardware_profile: incomingHardwareProfile } : {}),
                   ...(incomingHash ? { hardware_profile_hash: incomingHash } : {}),
                   hardware_profile_drift: {
@@ -387,6 +399,7 @@ export const joinRoute = (app: Elysia, auditLogger: AuditLogger = logAuditEvent)
                 $set: {
                   hostname,
                   persona,
+                  org_id: existingNode.org_id || incomingOrgId,
                   ...(incomingHardwareProfile ? { hardware_profile: incomingHardwareProfile } : {}),
                   ...(incomingHash ? { hardware_profile_hash: incomingHash } : {}),
                   hardware_profile_drift: {
@@ -406,6 +419,7 @@ export const joinRoute = (app: Elysia, auditLogger: AuditLogger = logAuditEvent)
           hostname,
           hardwareProfile: incomingHardwareProfile,
           hardwareProfileHash: incomingHash,
+          orgId: incomingOrgId,
         });
         node_id = newNode.node_id;
         status = 'new';

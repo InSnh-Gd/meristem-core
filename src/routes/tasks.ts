@@ -1,12 +1,14 @@
 import { Elysia, t } from 'elysia';
 import { randomUUID } from 'crypto';
 import { Db } from 'mongodb';
-import { TaskPayload } from '../db/collections';
+import { TASKS_COLLECTION, TaskDocument, TaskPayload } from '../db/collections';
 import { CreateTaskInput, createTask } from '../services/task-scheduler';
 import { logAuditEvent, type AuditEventInput } from '../services/audit';
 import { extractTraceId, generateTraceId } from '../utils/trace-context';
 import { validateCallDepthFromHeaders } from '../utils/call-depth';
 import { requireAuth, type AuthStore } from '../middleware/auth';
+import { DEFAULT_ORG_ID } from '../services/bootstrap';
+import { getUserById } from '../services/user';
 
 const DEFAULT_LEASE_DURATION_MS = 60 * 60 * 1000;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
@@ -34,6 +36,27 @@ const TaskCreatedResponseSchema = t.Object({
 const TaskErrorResponseSchema = t.Object({
   success: t.Literal(false),
   error: t.String(),
+});
+
+const TasksListQuerySchema = t.Object({
+  limit: t.Optional(t.Numeric({ minimum: 1, maximum: 500 })),
+  offset: t.Optional(t.Numeric({ minimum: 0 })),
+});
+
+const TasksListItemSchema = t.Object({
+  task_id: t.String(),
+  owner_id: t.String(),
+  org_id: t.String(),
+  target_node_id: t.String(),
+  status: t.String(),
+  availability: t.String(),
+  created_at: t.String(),
+});
+
+const TasksListResponseSchema = t.Object({
+  success: t.Literal(true),
+  data: t.Array(TasksListItemSchema),
+  total: t.Number(),
 });
 
 type RawTaskPayload = Record<string, unknown>;
@@ -79,11 +102,98 @@ const normalizePayload = (
   };
 };
 
+const isSuperadmin = (authStore: AuthStore): boolean => authStore.user.permissions.includes('*');
+
+const resolveActorOrgId = async (
+  db: Db,
+  authStore: AuthStore,
+): Promise<string | null> => {
+  if (authStore.user.type !== 'USER') {
+    return DEFAULT_ORG_ID;
+  }
+  const user = await getUserById(db, authStore.user.id);
+  if (!user) {
+    return null;
+  }
+  return user.org_id;
+};
+
 export const tasksRoute = (app: Elysia): Elysia => {
+  app.get(
+    '/api/v1/tasks',
+    async ({ query, set, store }) => {
+      const db = (global as { db?: Db }).db;
+      if (!db) {
+        set.status = 500;
+        return {
+          success: false,
+          error: 'DATABASE_NOT_CONNECTED',
+        };
+      }
+
+      const authStore = store as AuthStore;
+      if (!authStore.user) {
+        set.status = 401;
+        return {
+          success: false,
+          error: 'UNAUTHORIZED',
+        };
+      }
+
+      const limit = query.limit ?? 100;
+      const offset = query.offset ?? 0;
+      const filter: Record<string, unknown> = {};
+
+      if (!isSuperadmin(authStore)) {
+        const actorOrgId = await resolveActorOrgId(db, authStore);
+        if (!actorOrgId) {
+          set.status = 401;
+          return {
+            success: false,
+            error: 'UNAUTHORIZED',
+          };
+        }
+        filter.org_id = actorOrgId;
+      }
+
+      const collection = db.collection<TaskDocument>(TASKS_COLLECTION);
+      const total = await collection.countDocuments(filter);
+      const tasks = await collection
+        .find(filter)
+        .sort({ created_at: 1 })
+        .skip(offset)
+        .limit(limit)
+        .toArray();
+
+      return {
+        success: true,
+        data: tasks.map((task) => ({
+          task_id: task.task_id,
+          owner_id: task.owner_id,
+          org_id: task.org_id,
+          target_node_id: task.target_node_id,
+          status: task.status.type,
+          availability: task.availability,
+          created_at: task.created_at.toISOString(),
+        })),
+        total,
+      };
+    },
+    {
+      query: TasksListQuerySchema,
+      response: {
+        200: TasksListResponseSchema,
+        401: TaskErrorResponseSchema,
+        500: TaskErrorResponseSchema,
+      },
+      beforeHandle: [requireAuth],
+    },
+  );
+
   app.post(
     '/api/v1/tasks',
     async ({ body, request, set, store }) => {
-      const db = await (global as { db?: Db }).db;
+      const db = (global as { db?: Db }).db;
 
       if (!db) {
         set.status = 500;
@@ -104,6 +214,14 @@ export const tasksRoute = (app: Elysia): Elysia => {
       }
 
       const traceId = extractTraceId(request.headers) ?? generateTraceId();
+      const actorOrgId = await resolveActorOrgId(db, authStore);
+      if (!actorOrgId) {
+        set.status = 401;
+        return {
+          success: false,
+          error: 'UNAUTHORIZED',
+        };
+      }
       const callDepth = validateCallDepthFromHeaders(request.headers);
       if (!callDepth.ok) {
         const invalidDepthAudit: AuditEventInput = {
@@ -139,6 +257,7 @@ export const tasksRoute = (app: Elysia): Elysia => {
       const taskData: CreateTaskInput = {
         task_id: taskId,
         owner_id: authStore.user.id,
+        org_id: actorOrgId,
         trace_id: traceId,
         target_node_id: targetNodeId ?? '',
         type: 'COMMAND',

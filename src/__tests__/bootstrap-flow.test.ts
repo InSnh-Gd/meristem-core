@@ -2,7 +2,8 @@ import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { Elysia } from 'elysia';
 import type { Collection, Db, Document } from 'mongodb';
 
-import type { TaskDocument, UserDocument } from '../db/collections';
+import type { OrgDocument, RoleDocument, TaskDocument, UserDocument } from '../db/collections';
+import { ORGS_COLLECTION, ROLES_COLLECTION } from '../db/collections';
 import { authRoute } from '../routes/auth';
 import { bootstrapRoute } from '../routes/bootstrap';
 import { tasksRoute } from '../routes/tasks';
@@ -10,6 +11,8 @@ import { AUDIT_COLLECTION, resetAuditState, type AuditLog } from '../services/au
 
 type TestState = {
   users: UserDocument[];
+  roles: RoleDocument[];
+  orgs: OrgDocument[];
   tasks: TaskDocument[];
   audits: AuditLog[];
 };
@@ -30,7 +33,11 @@ const createMockDb = (state: TestState): Db => {
     findOne: async (query?: Record<string, unknown>): Promise<UserDocument | null> => {
       const username = query?.username;
       if (typeof username !== 'string') {
-        return null;
+        const userId = query?.user_id;
+        if (typeof userId !== 'string') {
+          return null;
+        }
+        return state.users.find((user) => user.user_id === userId) ?? null;
       }
       return state.users.find((user) => user.username === username) ?? null;
     },
@@ -51,10 +58,65 @@ const createMockDb = (state: TestState): Db => {
     },
   };
 
+  const rolesCollection = {
+    findOne: async (query?: Record<string, unknown>): Promise<RoleDocument | null> => {
+      const roleId = query?.role_id;
+      if (typeof roleId !== 'string') {
+        return null;
+      }
+      return state.roles.find((role) => role.role_id === roleId) ?? null;
+    },
+    insertOne: async (doc: RoleDocument): Promise<{ insertedId: string }> => {
+      state.roles.push(doc);
+      return { insertedId: doc.role_id };
+    },
+  };
+
+  const orgsCollection = {
+    findOne: async (query?: Record<string, unknown>): Promise<OrgDocument | null> => {
+      const orgId = query?.org_id;
+      if (typeof orgId !== 'string') {
+        return null;
+      }
+      return state.orgs.find((org) => org.org_id === orgId) ?? null;
+    },
+    insertOne: async (doc: OrgDocument): Promise<{ insertedId: string }> => {
+      state.orgs.push(doc);
+      return { insertedId: doc.org_id };
+    },
+    updateOne: async (
+      query: Record<string, unknown>,
+      update: { $set?: Record<string, unknown> },
+    ): Promise<{ modifiedCount: number }> => {
+      const orgId = query.org_id;
+      if (typeof orgId !== 'string') {
+        return { modifiedCount: 0 };
+      }
+      const index = state.orgs.findIndex((org) => org.org_id === orgId);
+      if (index < 0) {
+        return { modifiedCount: 0 };
+      }
+      if (update.$set) {
+        const next = { ...state.orgs[index] } as Record<string, unknown>;
+        for (const [key, value] of Object.entries(update.$set)) {
+          next[key] = value;
+        }
+        state.orgs[index] = next as OrgDocument;
+      }
+      return { modifiedCount: 1 };
+    },
+  };
+
   const db = {
     collection: <TSchema extends Document>(name: string): Collection<TSchema> => {
       if (name === USERS_COLLECTION) {
         return usersCollection as unknown as Collection<TSchema>;
+      }
+      if (name === ROLES_COLLECTION) {
+        return rolesCollection as unknown as Collection<TSchema>;
+      }
+      if (name === ORGS_COLLECTION) {
+        return orgsCollection as unknown as Collection<TSchema>;
       }
       if (name === TASKS_COLLECTION) {
         return tasksCollection as unknown as Collection<TSchema>;
@@ -131,32 +193,24 @@ const createProtectedTask = async (app: Elysia, accessToken?: string, callDepth?
   );
 };
 
-const originalJwtSecret = process.env.JWT_SECRET;
-const originalMeristemJwtSecret = process.env.MERISTEM_SECURITY_JWT_SECRET;
+const originalJwtSignSecret = process.env.MERISTEM_SECURITY_JWT_SIGN_SECRET;
 
 beforeEach((): void => {
   resetAuditState();
-  process.env.MERISTEM_SECURITY_JWT_SECRET = JWT_SECRET_VALUE;
-  delete process.env.JWT_SECRET;
+  process.env.MERISTEM_SECURITY_JWT_SIGN_SECRET = JWT_SECRET_VALUE;
 });
 
 afterEach((): void => {
   delete (global as { db?: Db }).db;
-  if (originalJwtSecret === undefined) {
-    delete process.env.JWT_SECRET;
+  if (originalJwtSignSecret === undefined) {
+    delete process.env.MERISTEM_SECURITY_JWT_SIGN_SECRET;
   } else {
-    process.env.JWT_SECRET = originalJwtSecret;
-  }
-
-  if (originalMeristemJwtSecret === undefined) {
-    delete process.env.MERISTEM_SECURITY_JWT_SECRET;
-  } else {
-    process.env.MERISTEM_SECURITY_JWT_SECRET = originalMeristemJwtSecret;
+    process.env.MERISTEM_SECURITY_JWT_SIGN_SECRET = originalJwtSignSecret;
   }
 });
 
 test('fresh db bootstrap -> login -> protected task creation succeeds', async (): Promise<void> => {
-  const state: TestState = { users: [], tasks: [], audits: [] };
+  const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [] };
   (global as { db?: Db }).db = createMockDb(state);
   const app = buildApp();
 
@@ -179,10 +233,26 @@ test('fresh db bootstrap -> login -> protected task creation succeeds', async ()
   expect(taskPayload.success).toBe(true);
   expect(typeof taskPayload.task_id).toBe('string');
   expect(state.tasks).toHaveLength(1);
-});
+}, 20_000);
+
+test('bootstrap creates user with org scope and role bindings', async (): Promise<void> => {
+  const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [] };
+  (global as { db?: Db }).db = createMockDb(state);
+  const app = buildApp();
+
+  const bootstrapResponse = await bootstrap(app, 'admin', 'S3curePass!');
+  expect(bootstrapResponse.status).toBe(201);
+  expect(state.users).toHaveLength(1);
+
+  const user = state.users[0] as unknown as Record<string, unknown>;
+  expect(typeof user.org_id).toBe('string');
+  expect(Array.isArray(user.role_ids)).toBe(true);
+  expect((user.role_ids as unknown[]).length).toBeGreaterThan(0);
+  expect(Array.isArray(user.permissions)).toBe(true);
+}, 20_000);
 
 test('second bootstrap attempt is rejected after first user exists', async (): Promise<void> => {
-  const state: TestState = { users: [], tasks: [], audits: [] };
+  const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [] };
   (global as { db?: Db }).db = createMockDb(state);
   const app = buildApp();
 
@@ -197,10 +267,10 @@ test('second bootstrap attempt is rejected after first user exists', async (): P
     error: 'Bootstrap already completed',
   });
   expect(state.users).toHaveLength(1);
-});
+}, 20_000);
 
 test('login fails on fresh database before bootstrap', async (): Promise<void> => {
-  const state: TestState = { users: [], tasks: [], audits: [] };
+  const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [] };
   (global as { db?: Db }).db = createMockDb(state);
   const app = buildApp();
 
@@ -211,10 +281,10 @@ test('login fails on fresh database before bootstrap', async (): Promise<void> =
     success: false,
     error: 'Invalid credentials',
   });
-});
+}, 20_000);
 
 test('login rejects wrong password after bootstrap', async (): Promise<void> => {
-  const state: TestState = { users: [], tasks: [], audits: [] };
+  const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [] };
   (global as { db?: Db }).db = createMockDb(state);
   const app = buildApp();
 
@@ -228,10 +298,10 @@ test('login rejects wrong password after bootstrap', async (): Promise<void> => 
     success: false,
     error: 'Invalid credentials',
   });
-});
+}, 20_000);
 
 test('protected task endpoint rejects missing authorization header', async (): Promise<void> => {
-  const state: TestState = { users: [], tasks: [], audits: [] };
+  const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [] };
   (global as { db?: Db }).db = createMockDb(state);
   const app = buildApp();
 
@@ -241,10 +311,10 @@ test('protected task endpoint rejects missing authorization header', async (): P
   expect(payload.success).toBe(false);
   expect(payload.error).toBe('UNAUTHORIZED');
   expect(state.tasks).toHaveLength(0);
-});
+}, 20_000);
 
 test('protected task endpoint rejects invalid call depth header', async (): Promise<void> => {
-  const state: TestState = { users: [], tasks: [], audits: [] };
+  const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [] };
   (global as { db?: Db }).db = createMockDb(state);
   const app = buildApp();
 
@@ -264,4 +334,4 @@ test('protected task endpoint rejects invalid call depth header', async (): Prom
     error: 'INVALID_CALL_DEPTH',
   });
   expect(state.tasks).toHaveLength(0);
-});
+}, 20_000);

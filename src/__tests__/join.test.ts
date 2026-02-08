@@ -48,6 +48,7 @@ test('createNode persists node document with correct metadata', async (): Promis
 test('recoverNode returns node when HWID exists', async (): Promise<void> => {
   const existingNode: NodeDocument = {
     node_id: 'node-recover',
+    org_id: 'org-default',
     hwid: 'recover-hwid',
     hostname: 'host-recover',
     persona: 'GIG',
@@ -164,6 +165,7 @@ test('joinRoute logs audit event for existing nodes', async (): Promise<void> =>
   const existingNodeHwid = 'e'.repeat(64);
   const existingNode: NodeDocument = {
     node_id: 'node-existing',
+    org_id: 'org-default',
     hwid: existingNodeHwid,
     hostname: 'old-host',
     persona: 'GIG',
@@ -242,7 +244,7 @@ test('joinRoute logs audit event for existing nodes', async (): Promise<void> =>
     trace_id: traceId,
     content: 'Node joined',
   });
-  expect(auditEvents[0].meta).toEqual({ persona: 'AGENT', status: 'existing' });
+  expect(auditEvents[0].meta).toEqual({ persona: 'AGENT', status: 'existing', org_id: 'org-default' });
   expect(auditEvents[0].node_id).toBe(existingNode.node_id);
 
   delete (global as { db?: unknown }).db;

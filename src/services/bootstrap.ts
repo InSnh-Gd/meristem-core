@@ -1,7 +1,18 @@
 import { randomBytes, randomUUID } from 'crypto';
 import bcrypt from 'bcrypt';
 import type { Db } from 'mongodb';
-import { USERS_COLLECTION, type UserDocument } from '../db/collections';
+import {
+  ORGS_COLLECTION,
+  ROLES_COLLECTION,
+  USERS_COLLECTION,
+  type OrgDocument,
+  type RoleDocument,
+  type UserDocument,
+} from '../db/collections';
+
+export const DEFAULT_ORG_ID = 'org-default';
+export const SUPERADMIN_ROLE_ID = 'role-superadmin';
+export const SUPERADMIN_ROLE_NAME = 'superadmin';
 
 const BOOTSTRAP_TOKEN_PREFIX = 'ST';
 const BOOTSTRAP_TOKEN_REGEX = /^ST-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
@@ -27,6 +38,39 @@ export const generateBootstrapToken = (): string =>
  */
 export const validateBootstrapToken = (token: string): boolean => BOOTSTRAP_TOKEN_REGEX.test(token);
 
+const ensureDefaultOrgAndRole = async (db: Db): Promise<void> => {
+  const orgCollection = db.collection<OrgDocument>(ORGS_COLLECTION);
+  const roleCollection = db.collection<RoleDocument>(ROLES_COLLECTION);
+  const now = new Date();
+
+  const org = await orgCollection.findOne({ org_id: DEFAULT_ORG_ID });
+  if (!org) {
+    await orgCollection.insertOne({
+      org_id: DEFAULT_ORG_ID,
+      name: 'Default Organization',
+      slug: 'default',
+      owner_user_id: '',
+      settings: {},
+      created_at: now,
+      updated_at: now,
+    });
+  }
+
+  const superadminRole = await roleCollection.findOne({ role_id: SUPERADMIN_ROLE_ID });
+  if (!superadminRole) {
+    await roleCollection.insertOne({
+      role_id: SUPERADMIN_ROLE_ID,
+      name: SUPERADMIN_ROLE_NAME,
+      description: 'Built-in superadmin role',
+      permissions: ['*'],
+      is_builtin: true,
+      org_id: DEFAULT_ORG_ID,
+      created_at: now,
+      updated_at: now,
+    });
+  }
+};
+
 /**
  * Create the very first admin user (bootstrap) with a bcrypt-hashed password.
  * This should only succeed when the users collection is empty.
@@ -38,14 +82,17 @@ export const createFirstUser = async (db: Db, username: string, password: string
     throw new Error('bootstrap already completed');
   }
 
+  await ensureDefaultOrgAndRole(db);
+
   const password_hash = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
   const now = new Date();
   const user: UserDocument = {
     user_id: randomUUID(),
     username,
     password_hash,
-    is_admin: true,
-    permissions: [],
+    role_ids: [SUPERADMIN_ROLE_ID],
+    org_id: DEFAULT_ORG_ID,
+    permissions: ['*'],
     permissions_v: 1,
     tokens: [],
     created_at: now,
@@ -53,5 +100,14 @@ export const createFirstUser = async (db: Db, username: string, password: string
   };
 
   await collection.insertOne(user);
+  await db.collection<OrgDocument>(ORGS_COLLECTION).updateOne(
+    { org_id: DEFAULT_ORG_ID },
+    {
+      $set: {
+        owner_user_id: user.user_id,
+        updated_at: now,
+      },
+    },
+  );
   return user;
 };

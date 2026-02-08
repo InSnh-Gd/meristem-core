@@ -11,6 +11,7 @@ type TaskDocumentWithResultInfo = TaskDocument & {
 const createTask = (taskId: string): TaskDocumentWithResultInfo => ({
   task_id: taskId,
   owner_id: 'owner-1',
+  org_id: 'org-default',
   trace_id: 'trace-1',
   target_node_id: 'node-1',
   type: 'COMMAND',

@@ -35,7 +35,13 @@ export const requirePermission = (perm: string) => {
       };
     }
 
-    if (!user.permissions.includes(perm)) {
+    const namespace = perm.includes(':') ? perm.split(':')[0] : null;
+    const hasPermission =
+      user.permissions.includes('*') ||
+      user.permissions.includes(perm) ||
+      (namespace ? user.permissions.includes(`${namespace}:*`) : false);
+
+    if (!hasPermission) {
       context.set.status = 403;
       return {
         success: false,

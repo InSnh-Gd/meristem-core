@@ -11,8 +11,6 @@ import {
 
 const originalMeristemJwtSignSecret = process.env.MERISTEM_SECURITY_JWT_SIGN_SECRET;
 const originalMeristemJwtVerifySecrets = process.env.MERISTEM_SECURITY_JWT_VERIFY_SECRETS;
-const originalMeristemJwtSecret = process.env.MERISTEM_SECURITY_JWT_SECRET;
-const originalJwtSecret = process.env.JWT_SECRET;
 
 afterEach((): void => {
   if (originalMeristemJwtSignSecret === undefined) {
@@ -25,18 +23,6 @@ afterEach((): void => {
     delete process.env.MERISTEM_SECURITY_JWT_VERIFY_SECRETS;
   } else {
     process.env.MERISTEM_SECURITY_JWT_VERIFY_SECRETS = originalMeristemJwtVerifySecrets;
-  }
-
-  if (originalMeristemJwtSecret === undefined) {
-    delete process.env.MERISTEM_SECURITY_JWT_SECRET;
-  } else {
-    process.env.MERISTEM_SECURITY_JWT_SECRET = originalMeristemJwtSecret;
-  }
-
-  if (originalJwtSecret === undefined) {
-    delete process.env.JWT_SECRET;
-  } else {
-    process.env.JWT_SECRET = originalJwtSecret;
   }
 });
 

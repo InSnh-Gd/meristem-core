@@ -13,7 +13,6 @@ import {
 const originalEnv = {
   MERISTEM_SECURITY_JWT_SIGN_SECRET: process.env.MERISTEM_SECURITY_JWT_SIGN_SECRET,
   MERISTEM_SECURITY_JWT_VERIFY_SECRETS: process.env.MERISTEM_SECURITY_JWT_VERIFY_SECRETS,
-  MERISTEM_SECURITY_JWT_SECRET: process.env.MERISTEM_SECURITY_JWT_SECRET,
   MERISTEM_SECURITY_JWT_ROTATION_STORE_PATH: process.env.MERISTEM_SECURITY_JWT_ROTATION_STORE_PATH,
 };
 
@@ -83,7 +82,6 @@ test('loadConfig uses rotation store secret when env sign secret is missing', as
 
   delete process.env.MERISTEM_SECURITY_JWT_SIGN_SECRET;
   delete process.env.MERISTEM_SECURITY_JWT_VERIFY_SECRETS;
-  delete process.env.MERISTEM_SECURITY_JWT_SECRET;
   process.env.MERISTEM_SECURITY_JWT_ROTATION_STORE_PATH = storePath;
 
   const config = loadConfig();
