@@ -118,19 +118,10 @@ const resolveActorOrgId = async (
   return user.org_id;
 };
 
-export const tasksRoute = (app: Elysia): Elysia => {
+export const tasksRoute = (app: Elysia, db: Db): Elysia => {
   app.get(
     '/api/v1/tasks',
     async ({ query, set, store }) => {
-      const db = (global as { db?: Db }).db;
-      if (!db) {
-        set.status = 500;
-        return {
-          success: false,
-          error: 'DATABASE_NOT_CONNECTED',
-        };
-      }
-
       const authStore = store as AuthStore;
       if (!authStore.user) {
         set.status = 401;
@@ -184,7 +175,6 @@ export const tasksRoute = (app: Elysia): Elysia => {
       response: {
         200: TasksListResponseSchema,
         401: TaskErrorResponseSchema,
-        500: TaskErrorResponseSchema,
       },
       beforeHandle: [requireAuth],
     },
@@ -193,16 +183,6 @@ export const tasksRoute = (app: Elysia): Elysia => {
   app.post(
     '/api/v1/tasks',
     async ({ body, request, set, store }) => {
-      const db = (global as { db?: Db }).db;
-
-      if (!db) {
-        set.status = 500;
-        return {
-          success: false,
-          error: 'DATABASE_NOT_CONNECTED',
-        };
-      }
-
       const authStore = store as AuthStore;
 
       if (!authStore.user) {

@@ -1,0 +1,120 @@
+import type { Collection, Db, IndexDescription } from 'mongodb';
+import type { TraceContext } from '../utils/trace-context';
+import { createLogger } from '../utils/logger';
+import {
+  INVITATIONS_COLLECTION,
+  NODES_COLLECTION,
+  ORGS_COLLECTION,
+  PLUGINS_COLLECTION,
+  ROLES_COLLECTION,
+  TASKS_COLLECTION,
+  USERS_COLLECTION,
+} from './collections';
+
+export type IndexSpec = IndexDescription;
+
+type CollectionIndexPlan = {
+  collection: string;
+  specs: readonly IndexSpec[];
+};
+
+const INDEX_PLANS: readonly CollectionIndexPlan[] = [
+  {
+    collection: USERS_COLLECTION,
+    specs: [
+      { key: { user_id: 1 }, name: 'uniq_user_id', unique: true },
+      { key: { username: 1 }, name: 'uniq_username', unique: true },
+      { key: { org_id: 1, created_at: 1 }, name: 'idx_users_org_created' },
+    ],
+  },
+  {
+    collection: ROLES_COLLECTION,
+    specs: [
+      { key: { role_id: 1 }, name: 'uniq_role_id', unique: true },
+      { key: { org_id: 1, name: 1 }, name: 'uniq_roles_org_name', unique: true },
+      { key: { org_id: 1, created_at: 1 }, name: 'idx_roles_org_created' },
+    ],
+  },
+  {
+    collection: TASKS_COLLECTION,
+    specs: [
+      { key: { task_id: 1 }, name: 'uniq_task_id', unique: true },
+      { key: { org_id: 1, created_at: 1 }, name: 'idx_tasks_org_created' },
+      {
+        key: { 'status.type': 1, target_node_id: 1, created_at: 1 },
+        name: 'idx_tasks_status_target_created',
+      },
+      { key: { owner_id: 1, created_at: 1 }, name: 'idx_tasks_owner_created' },
+      { key: { trace_id: 1 }, name: 'idx_tasks_trace' },
+    ],
+  },
+  {
+    collection: NODES_COLLECTION,
+    specs: [
+      { key: { node_id: 1 }, name: 'uniq_node_id', unique: true },
+      { key: { hwid: 1 }, name: 'uniq_node_hwid', unique: true },
+      { key: { org_id: 1, persona: 1 }, name: 'idx_nodes_org_persona' },
+      { key: { 'status.online': 1, 'status.last_seen': 1 }, name: 'idx_nodes_online_last_seen' },
+    ],
+  },
+  {
+    collection: ORGS_COLLECTION,
+    specs: [
+      { key: { org_id: 1 }, name: 'uniq_org_id', unique: true },
+      { key: { slug: 1 }, name: 'uniq_org_slug', unique: true },
+    ],
+  },
+  {
+    collection: INVITATIONS_COLLECTION,
+    specs: [
+      { key: { invitation_id: 1 }, name: 'uniq_invitation_id', unique: true },
+      { key: { invitation_token: 1 }, name: 'uniq_invitation_token', unique: true },
+      { key: { status: 1, expires_at: 1 }, name: 'idx_invitations_status_expire' },
+      { key: { org_id: 1, username: 1 }, name: 'idx_invitations_org_username' },
+    ],
+  },
+  {
+    collection: PLUGINS_COLLECTION,
+    specs: [
+      { key: { plugin_id: 1 }, name: 'uniq_plugin_id', unique: true },
+      { key: { name: 1, version: 1 }, name: 'uniq_plugin_name_version', unique: true },
+      { key: { status: 1 }, name: 'idx_plugins_status' },
+    ],
+  },
+  {
+    collection: 'audit_logs',
+    specs: [
+      { key: { _sequence: 1 }, name: 'uniq_audit_sequence', unique: true },
+      { key: { ts: -1 }, name: 'idx_audit_ts_desc' },
+      { key: { trace_id: 1, _sequence: 1 }, name: 'idx_audit_trace_sequence' },
+      { key: { source: 1, ts: -1 }, name: 'idx_audit_source_ts' },
+      { key: { level: 1, ts: -1 }, name: 'idx_audit_level_ts' },
+      { key: { 'meta.actor': 1, ts: -1 }, name: 'idx_audit_actor_ts' },
+    ],
+  },
+];
+
+const createCollectionIndexes = async (
+  collection: Collection,
+  specs: readonly IndexSpec[],
+): Promise<void> => {
+  if (specs.length === 0) {
+    return;
+  }
+  await collection.createIndexes([...specs]);
+};
+
+export const ensureDbIndexes = async (
+  db: Db,
+  traceContext: TraceContext,
+): Promise<void> => {
+  const logger = createLogger(traceContext);
+  const startedAt = Date.now();
+
+  for (const plan of INDEX_PLANS) {
+    await createCollectionIndexes(db.collection(plan.collection), plan.specs);
+  }
+
+  const elapsedMs = Date.now() - startedAt;
+  logger.info(`[DB] 索引初始化完成，共 ${INDEX_PLANS.length} 个集合，耗时 ${elapsedMs}ms`);
+};

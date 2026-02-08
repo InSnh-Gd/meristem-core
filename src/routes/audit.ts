@@ -134,6 +134,12 @@ export const AuditLogsResponseSchema = t.Object({
   }),
 });
 
+const AuditLogsErrorSchema = t.Object({
+  success: t.Boolean(),
+  error: t.String(),
+  message: t.Optional(t.String()),
+});
+
 /**
  * 纯函数：构建 MongoDB 查询过滤器
  *
@@ -246,20 +252,10 @@ const queryAuditLogs = async (
  * @param app - Elysia 应用实例
  * @returns 配置了审计日志查询路由的 Elysia 实例
  */
-export const auditRoute = (app: Elysia): Elysia => {
+export const auditRoute = (app: Elysia, db: Db): Elysia => {
   app.get(
     '/api/v1/audit-logs',
-    async ({ query, set }) => {
-      const db = await (global as { db?: Db }).db;
-
-      if (!db) {
-        set.status = 500;
-        return {
-          success: false,
-          error: 'DATABASE_NOT_CONNECTED',
-        };
-      }
-
+    async ({ query }) => {
       // 查询审计日志
       const { logs, total } = await queryAuditLogs(db, query);
 
@@ -277,10 +273,9 @@ export const auditRoute = (app: Elysia): Elysia => {
       query: AuditLogsQuerySchema,
       response: {
         200: AuditLogsResponseSchema,
-        500: t.Object({
-          success: t.Boolean(),
-          error: t.String(),
-        }),
+        401: AuditLogsErrorSchema,
+        403: AuditLogsErrorSchema,
+        500: AuditLogsErrorSchema,
       },
       beforeHandle: [requireAuth, requirePermission('sys:audit')],
     },

@@ -126,27 +126,13 @@ const ensureSuperadmin = (
   return null;
 };
 
-const getDbFromGlobal = (): Db | null => {
-  const db = (global as { db?: Db }).db;
-  return db ?? null;
-};
-
-export const usersRoute = (app: Elysia): Elysia => {
+export const usersRoute = (app: Elysia, db: Db): Elysia => {
   app.get(
     '/api/v1/users',
     async ({ query, set, store }) => {
       const denied = ensureSuperadmin({ set, store });
       if (denied) {
         return denied;
-      }
-
-      const db = getDbFromGlobal();
-      if (!db) {
-        set.status = 500;
-        return {
-          success: false,
-          error: 'DATABASE_NOT_CONNECTED',
-        };
       }
 
       const { data, total } = await listUsers(db, {
@@ -167,7 +153,6 @@ export const usersRoute = (app: Elysia): Elysia => {
         200: UsersListResponseSchema,
         401: GenericErrorSchema,
         403: GenericErrorSchema,
-        500: GenericErrorSchema,
       },
       beforeHandle: [requireAuth],
     },
@@ -179,15 +164,6 @@ export const usersRoute = (app: Elysia): Elysia => {
       const denied = ensureSuperadmin({ set, store });
       if (denied) {
         return denied;
-      }
-
-      const db = getDbFromGlobal();
-      if (!db) {
-        set.status = 500;
-        return {
-          success: false,
-          error: 'DATABASE_NOT_CONNECTED',
-        };
       }
 
       const user = await getUserById(db, params.id);
@@ -210,7 +186,6 @@ export const usersRoute = (app: Elysia): Elysia => {
         401: GenericErrorSchema,
         403: GenericErrorSchema,
         404: GenericErrorSchema,
-        500: GenericErrorSchema,
       },
       beforeHandle: [requireAuth],
     },
@@ -222,15 +197,6 @@ export const usersRoute = (app: Elysia): Elysia => {
       const denied = ensureSuperadmin({ set, store });
       if (denied) {
         return denied;
-      }
-
-      const db = getDbFromGlobal();
-      if (!db) {
-        set.status = 500;
-        return {
-          success: false,
-          error: 'DATABASE_NOT_CONNECTED',
-        };
       }
 
       const orgId = body.org_id ?? DEFAULT_ORG_ID;
@@ -289,15 +255,6 @@ export const usersRoute = (app: Elysia): Elysia => {
       const denied = ensureSuperadmin({ set, store });
       if (denied) {
         return denied;
-      }
-
-      const db = getDbFromGlobal();
-      if (!db) {
-        set.status = 500;
-        return {
-          success: false,
-          error: 'DATABASE_NOT_CONNECTED',
-        };
       }
 
       try {
@@ -361,15 +318,6 @@ export const usersRoute = (app: Elysia): Elysia => {
         return denied;
       }
 
-      const db = getDbFromGlobal();
-      if (!db) {
-        set.status = 500;
-        return {
-          success: false,
-          error: 'DATABASE_NOT_CONNECTED',
-        };
-      }
-
       const removed = await deleteUser(db, params.id);
       if (!removed) {
         set.status = 404;
@@ -398,15 +346,6 @@ export const usersRoute = (app: Elysia): Elysia => {
       const denied = ensureSuperadmin({ set, store });
       if (denied) {
         return denied;
-      }
-
-      const db = getDbFromGlobal();
-      if (!db) {
-        set.status = 500;
-        return {
-          success: false,
-          error: 'DATABASE_NOT_CONNECTED',
-        };
       }
 
       const authStore = store as AuthStore;
@@ -453,15 +392,6 @@ export const usersRoute = (app: Elysia): Elysia => {
   app.post(
     '/api/v1/users/invitations/accept',
     async ({ body, set }) => {
-      const db = getDbFromGlobal();
-      if (!db) {
-        set.status = 500;
-        return {
-          success: false,
-          error: 'DATABASE_NOT_CONNECTED',
-        };
-      }
-
       try {
         const result = await acceptInvitation(db, {
           invitation_token: body.invitation_token,
@@ -537,15 +467,6 @@ export const usersRoute = (app: Elysia): Elysia => {
         return denied;
       }
 
-      const db = getDbFromGlobal();
-      if (!db) {
-        set.status = 500;
-        return {
-          success: false,
-          error: 'DATABASE_NOT_CONNECTED',
-        };
-      }
-
       try {
         const user = await assignRoleToUser(db, params.id, body.role_id);
         if (!user) {
@@ -594,15 +515,6 @@ export const usersRoute = (app: Elysia): Elysia => {
       const denied = ensureSuperadmin({ set, store });
       if (denied) {
         return denied;
-      }
-
-      const db = getDbFromGlobal();
-      if (!db) {
-        set.status = 500;
-        return {
-          success: false,
-          error: 'DATABASE_NOT_CONNECTED',
-        };
       }
 
       const user = await removeRoleFromUser(db, params.id, params.roleId);

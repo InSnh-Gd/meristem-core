@@ -108,27 +108,13 @@ const ensureSuperadmin = (
   return null;
 };
 
-const getDbFromGlobal = (): Db | null => {
-  const db = (global as { db?: Db }).db;
-  return db ?? null;
-};
-
-export const rolesRoute = (app: Elysia): Elysia => {
+export const rolesRoute = (app: Elysia, db: Db): Elysia => {
   app.get(
     '/api/v1/roles',
     async ({ query, set, store }) => {
       const denied = ensureSuperadmin({ set, store });
       if (denied) {
         return denied;
-      }
-
-      const db = getDbFromGlobal();
-      if (!db) {
-        set.status = 500;
-        return {
-          success: false,
-          error: 'DATABASE_NOT_CONNECTED',
-        };
       }
 
       const { data, total } = await listRoles(db, {
@@ -162,15 +148,6 @@ export const rolesRoute = (app: Elysia): Elysia => {
         return denied;
       }
 
-      const db = getDbFromGlobal();
-      if (!db) {
-        set.status = 500;
-        return {
-          success: false,
-          error: 'DATABASE_NOT_CONNECTED',
-        };
-      }
-
       const role = await findRoleById(db, params.id);
       if (!role) {
         set.status = 404;
@@ -202,15 +179,6 @@ export const rolesRoute = (app: Elysia): Elysia => {
       const denied = ensureSuperadmin({ set, store });
       if (denied) {
         return denied;
-      }
-
-      const db = getDbFromGlobal();
-      if (!db) {
-        set.status = 500;
-        return {
-          success: false,
-          error: 'DATABASE_NOT_CONNECTED',
-        };
       }
 
       try {
@@ -259,14 +227,6 @@ export const rolesRoute = (app: Elysia): Elysia => {
       const denied = ensureSuperadmin({ set, store });
       if (denied) {
         return denied;
-      }
-      const db = getDbFromGlobal();
-      if (!db) {
-        set.status = 500;
-        return {
-          success: false,
-          error: 'DATABASE_NOT_CONNECTED',
-        };
       }
 
       try {
@@ -330,15 +290,6 @@ export const rolesRoute = (app: Elysia): Elysia => {
       const denied = ensureSuperadmin({ set, store });
       if (denied) {
         return denied;
-      }
-
-      const db = getDbFromGlobal();
-      if (!db) {
-        set.status = 500;
-        return {
-          success: false,
-          error: 'DATABASE_NOT_CONNECTED',
-        };
       }
 
       try {

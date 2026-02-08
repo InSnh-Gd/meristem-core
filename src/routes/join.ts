@@ -303,7 +303,11 @@ export const recoverNode = async (
  */
 type AuditLogger = (db: Db, event: AuditEventInput) => Promise<AuditLog>;
 
-export const joinRoute = (app: Elysia, auditLogger: AuditLogger = logAuditEvent): Elysia => {
+export const joinRoute = (
+  app: Elysia,
+  db: Db,
+  auditLogger: AuditLogger = logAuditEvent,
+): Elysia => {
   app.post(
     '/api/v1/join',
     async ({ body, set, request }) => {
@@ -322,16 +326,6 @@ export const joinRoute = (app: Elysia, auditLogger: AuditLogger = logAuditEvent)
         };
       }
       const incomingHash = incomingHashResolution.hash;
-
-      const db = (global as { db?: Db }).db;
-
-      if (!db) {
-        set.status = 500;
-        return {
-          success: false,
-          error: 'DATABASE_NOT_CONNECTED',
-        };
-      }
 
       const existingNode = await recoverNode(db, hwid);
 

@@ -131,11 +131,11 @@ const createMockDb = (state: TestState): Db => {
   return db as unknown as Db;
 };
 
-const buildApp = (): Elysia => {
+const buildApp = (db: Db): Elysia => {
   const app = new Elysia();
-  bootstrapRoute(app);
-  authRoute(app);
-  tasksRoute(app);
+  bootstrapRoute(app, db);
+  authRoute(app, db);
+  tasksRoute(app, db);
   return app;
 };
 
@@ -201,7 +201,6 @@ beforeEach((): void => {
 });
 
 afterEach((): void => {
-  delete (global as { db?: Db }).db;
   if (originalJwtSignSecret === undefined) {
     delete process.env.MERISTEM_SECURITY_JWT_SIGN_SECRET;
   } else {
@@ -211,8 +210,8 @@ afterEach((): void => {
 
 test('fresh db bootstrap -> login -> protected task creation succeeds', async (): Promise<void> => {
   const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [] };
-  (global as { db?: Db }).db = createMockDb(state);
-  const app = buildApp();
+  const db = createMockDb(state);
+  const app = buildApp(db);
 
   const bootstrapResponse = await bootstrap(app, 'admin', 'S3curePass!');
   const bootstrapPayload = asRecord(await bootstrapResponse.json());
@@ -237,8 +236,8 @@ test('fresh db bootstrap -> login -> protected task creation succeeds', async ()
 
 test('bootstrap creates user with org scope and role bindings', async (): Promise<void> => {
   const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [] };
-  (global as { db?: Db }).db = createMockDb(state);
-  const app = buildApp();
+  const db = createMockDb(state);
+  const app = buildApp(db);
 
   const bootstrapResponse = await bootstrap(app, 'admin', 'S3curePass!');
   expect(bootstrapResponse.status).toBe(201);
@@ -253,8 +252,8 @@ test('bootstrap creates user with org scope and role bindings', async (): Promis
 
 test('second bootstrap attempt is rejected after first user exists', async (): Promise<void> => {
   const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [] };
-  (global as { db?: Db }).db = createMockDb(state);
-  const app = buildApp();
+  const db = createMockDb(state);
+  const app = buildApp(db);
 
   const firstResponse = await bootstrap(app, 'admin-a', 'S3curePass!');
   expect(firstResponse.status).toBe(201);
@@ -271,8 +270,8 @@ test('second bootstrap attempt is rejected after first user exists', async (): P
 
 test('login fails on fresh database before bootstrap', async (): Promise<void> => {
   const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [] };
-  (global as { db?: Db }).db = createMockDb(state);
-  const app = buildApp();
+  const db = createMockDb(state);
+  const app = buildApp(db);
 
   const loginResponse = await login(app, 'missing-admin', 'S3curePass!');
   const loginPayload = asRecord(await loginResponse.json());
@@ -285,8 +284,8 @@ test('login fails on fresh database before bootstrap', async (): Promise<void> =
 
 test('login rejects wrong password after bootstrap', async (): Promise<void> => {
   const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [] };
-  (global as { db?: Db }).db = createMockDb(state);
-  const app = buildApp();
+  const db = createMockDb(state);
+  const app = buildApp(db);
 
   const bootstrapResponse = await bootstrap(app, 'admin', 'S3curePass!');
   expect(bootstrapResponse.status).toBe(201);
@@ -302,8 +301,8 @@ test('login rejects wrong password after bootstrap', async (): Promise<void> => 
 
 test('protected task endpoint rejects missing authorization header', async (): Promise<void> => {
   const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [] };
-  (global as { db?: Db }).db = createMockDb(state);
-  const app = buildApp();
+  const db = createMockDb(state);
+  const app = buildApp(db);
 
   const response = await createProtectedTask(app);
   const payload = asRecord(await response.json());
@@ -315,8 +314,8 @@ test('protected task endpoint rejects missing authorization header', async (): P
 
 test('protected task endpoint rejects invalid call depth header', async (): Promise<void> => {
   const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [] };
-  (global as { db?: Db }).db = createMockDb(state);
-  const app = buildApp();
+  const db = createMockDb(state);
+  const app = buildApp(db);
 
   const bootstrapResponse = await bootstrap(app, 'admin', 'S3curePass!');
   expect(bootstrapResponse.status).toBe(201);

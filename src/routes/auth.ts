@@ -31,21 +31,15 @@ export const LoginErrorResponseSchema = t.Object({
 
 type AuditLogger = (db: Db, event: AuditEventInput) => Promise<AuditLog>;
 
-export const authRoute = (app: Elysia, auditLogger: AuditLogger = logAuditEvent): Elysia => {
+export const authRoute = (
+  app: Elysia,
+  db: Db,
+  auditLogger: AuditLogger = logAuditEvent,
+): Elysia => {
   app.post(
     '/api/v1/auth/login',
     async ({ body, set, request }) => {
       const { username, password } = body;
-      const globalState = global as { db?: Db };
-      const db = globalState.db;
-
-      if (!db) {
-        set.status = 500;
-        return {
-          success: false,
-          error: 'DATABASE_NOT_CONNECTED',
-        };
-      }
 
       const traceId = extractTraceId(request.headers) ?? generateTraceId();
       const now = Date.now();
@@ -112,7 +106,6 @@ export const authRoute = (app: Elysia, auditLogger: AuditLogger = logAuditEvent)
       response: {
         200: LoginSuccessResponseSchema,
         401: LoginErrorResponseSchema,
-        500: LoginErrorResponseSchema,
       },
     },
   );

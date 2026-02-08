@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { Elysia } from 'elysia';
-import type { Db } from 'mongodb';
 
 import type { UserDocument } from '../db/collections';
 import { DEFAULT_ORG_ID, SUPERADMIN_ROLE_ID } from '../services/bootstrap';
@@ -36,7 +35,6 @@ beforeEach((): void => {
 });
 
 afterEach((): void => {
-  delete (global as { db?: Db }).db;
   if (originalJwtSignSecret === undefined) {
     delete process.env.MERISTEM_SECURITY_JWT_SIGN_SECRET;
   } else {
@@ -47,10 +45,10 @@ afterEach((): void => {
 test('users API enforces superadmin and supports CRUD', async (): Promise<void> => {
   const state = createInMemoryDbState();
   state.users.push(createUserDoc());
-  (global as { db?: Db }).db = createInMemoryDb(state);
+  const db = createInMemoryDb(state);
 
   const app = new Elysia();
-  usersRoute(app);
+  usersRoute(app, db);
 
   const normalAuth = await createBearerToken(
     {

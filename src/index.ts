@@ -1,5 +1,6 @@
 import { Elysia } from 'elysia';
 import { connectDb } from './db/connection';
+import { ensureDbIndexes } from './db/indexes';
 import { joinRoute } from './routes/join';
 import { auditRoute } from './routes/audit';
 import { bootstrapRoute } from './routes/bootstrap';
@@ -72,7 +73,7 @@ export const startApp = async (config: AppConfig = {}): Promise<Elysia> => {
   const db = await connectDb(initTraceContext, {
     uri: coreConfig.database.mongo_uri,
   });
-  (global as { db?: unknown }).db = db;
+  await ensureDbIndexes(db, initTraceContext);
 
   await connectNats(initTraceContext);
 
@@ -91,14 +92,14 @@ export const startApp = async (config: AppConfig = {}): Promise<Elysia> => {
 
   const app = createApp(config);
   app.use(traceMiddleware());
-  joinRoute(app);
-  auditRoute(app);
-  bootstrapRoute(app);
-  authRoute(app);
-  usersRoute(app);
-  rolesRoute(app);
-  tasksRoute(app);
-  resultsRoute(app);
+  joinRoute(app, db);
+  auditRoute(app, db);
+  bootstrapRoute(app, db);
+  authRoute(app, db);
+  usersRoute(app, db);
+  rolesRoute(app, db);
+  tasksRoute(app, db);
+  resultsRoute(app, db);
   wsRoute(app, { wsPath: coreConfig.server.ws_path });
 
   app.listen({ port });
