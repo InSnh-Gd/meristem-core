@@ -1,6 +1,6 @@
 import type { NatsConnection } from 'nats';
 import { getNats } from '../nats/connection';
-import type { LogEnvelope, LogLevel } from 'meristem-shared';
+import type { LogEnvelope, LogLevel } from '@insnh-gd/meristem-shared';
 
 const DEFAULT_MAX_BUFFER_BYTES = 5 * 1024 * 1024;
 const DEFAULT_MIN_BATCH_SIZE = 50;

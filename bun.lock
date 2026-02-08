@@ -7,10 +7,10 @@
       "dependencies": {
         "@elysiajs/jwt": "^1.4.0",
         "@iarna/toml": "^2.2.5",
+        "@insnh-gd/meristem-shared": "npm:@jsr/insnh-gd__meristem-shared@^0.1.3",
         "bcrypt": "^6.0.0",
         "elysia": "^1.0.0",
         "jose": "^6.1.3",
-        "meristem-shared": "git+https://github.com/InSnh-Gd/meristem-shared.git#v0.1.2",
         "mongodb": "^6.0.0",
         "nats": "^2.29.3",
       },
@@ -22,15 +22,14 @@
       },
     },
   },
-  "trustedDependencies": [
-    "meristem-shared",
-  ],
   "packages": {
     "@borewit/text-codec": ["@borewit/text-codec@0.2.1", "", {}, "sha512-k7vvKPbf7J2fZ5klGRD9AeKfUvojuZIQ3BT5u7Jfv+puwXkUBUT5PVyMDfJZpy30CBDXGMgw7fguK/lpOMBvgw=="],
 
     "@elysiajs/jwt": ["@elysiajs/jwt@1.4.0", "", { "dependencies": { "jose": "^6.0.11" }, "peerDependencies": { "elysia": ">= 1.4.0" } }, "sha512-Z0PvZhQxdDeKZ8HslXzDoXXD83NKExNPmoiAPki3nI2Xvh5wtUrBH+zWOD17yP14IbRo8fxGj3L25MRCAPsgPA=="],
 
     "@iarna/toml": ["@iarna/toml@2.2.5", "", {}, "sha512-trnsAYxU3xnS1gPHPyU961coFyLkh4gAD/0zQ5mymY4yOZ+CYvsPqUbOFSw0aDM4y0tV7tiFxL/1XfXPNC6IPg=="],
+
+    "@insnh-gd/meristem-shared": ["@jsr/insnh-gd__meristem-shared@0.1.3", "https://npm.jsr.io/~/11/@jsr/insnh-gd__meristem-shared/0.1.3.tgz", {}, "sha512-ym2RUmIj8fQMnWEpzTPomW5zxd3NUF0ZE3vuwvMz+TKqH41AvksLKdN7tyYDmv9cEpNY1EhsiJOBAdW8X+LMXQ=="],
 
     "@mongodb-js/saslprep": ["@mongodb-js/saslprep@1.4.5", "", { "dependencies": { "sparse-bitfield": "^3.0.3" } }, "sha512-k64Lbyb7ycCSXHSLzxVdb2xsKGPMvYZfCICXvDsI8Z65CeWQzTEKS4YmGbnqw+U9RBvLPTsB6UCmwkgsDTGWIw=="],
 
@@ -77,8 +76,6 @@
     "memoirist": ["memoirist@0.4.0", "", {}, "sha512-zxTgA0mSYELa66DimuNQDvyLq36AwDlTuVRbnQtB+VuTcKWm5Qc4z3WkSpgsFWHNhexqkIooqpv4hdcqrX5Nmg=="],
 
     "memory-pager": ["memory-pager@1.5.0", "", {}, "sha512-ZS4Bp4r/Zoeq6+NLJpP+0Zzm0pR8whtGPf1XExKLJBAczGMnSi3It14OiNCStjQjM6NU1okjQGSxgEZN8eBYKg=="],
-
-    "meristem-shared": ["meristem-shared@github:InSnh-Gd/meristem-shared#b8078aa", {}, "InSnh-Gd-meristem-shared-b8078aa"],
 
     "mongodb": ["mongodb@6.21.0", "", { "dependencies": { "@mongodb-js/saslprep": "^1.3.0", "bson": "^6.10.4", "mongodb-connection-string-url": "^3.0.2" }, "peerDependencies": { "@aws-sdk/credential-providers": "^3.188.0", "@mongodb-js/zstd": "^1.1.0 || ^2.0.0", "gcp-metadata": "^5.2.0", "kerberos": "^2.0.1", "mongodb-client-encryption": ">=6.0.0 <7", "snappy": "^7.3.2", "socks": "^2.7.1" }, "optionalPeers": ["@aws-sdk/credential-providers", "@mongodb-js/zstd", "gcp-metadata", "kerberos", "mongodb-client-encryption", "snappy", "socks"] }, "sha512-URyb/VXMjJ4da46OeSXg+puO39XH9DeQpWCslifrRn9JWugy0D+DvvBvkm2WxmHe61O/H19JM66p1z7RHVkZ6A=="],
 

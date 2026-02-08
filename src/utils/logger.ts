@@ -2,7 +2,7 @@ import pino from 'pino';
 import { createNatsTransport } from './nats-transport';
 import { getNatsIfConnected } from '../nats/connection';
 import type { TraceContext } from './trace-context.js';
-import type { LogEnvelope, LogLevel } from 'meristem-shared';
+import type { LogEnvelope, LogLevel } from '@insnh-gd/meristem-shared';
 
 // Module-level singleton to avoid per-logger instances.
 const sharedNatsTransport = createNatsTransport({
