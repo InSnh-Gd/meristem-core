@@ -119,19 +119,23 @@ const resolveMissingIndexNames = async (
   collection: Collection,
   expectedNames: readonly string[],
 ): Promise<string[]> => {
-  const listIndexes = (collection as IndexListCapableCollection).listIndexes;
-  if (typeof listIndexes !== 'function') {
+  const collectionWithListIndexes = collection as IndexListCapableCollection;
+  if (typeof collectionWithListIndexes.listIndexes !== 'function') {
     return [];
   }
 
-  const existingIndexes = await listIndexes().toArray();
-  const existingNames = new Set(
-    existingIndexes
-      .map((item) => item.name)
-      .filter((name): name is string => typeof name === 'string' && name.length > 0),
-  );
+  try {
+    const existingIndexes = await collectionWithListIndexes.listIndexes().toArray();
+    const existingNames = new Set(
+      existingIndexes
+        .map((item) => item.name)
+        .filter((name): name is string => typeof name === 'string' && name.length > 0),
+    );
 
-  return expectedNames.filter((name) => !existingNames.has(name));
+    return expectedNames.filter((name) => !existingNames.has(name));
+  } catch {
+    return [];
+  }
 };
 
 export const ensureDbIndexes = async (
