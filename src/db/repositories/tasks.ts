@@ -6,6 +6,7 @@ import type {
 } from 'mongodb';
 import { TASKS_COLLECTION, type TaskDocument } from '../collections';
 import type { DbSession } from '../transactions';
+import { resolveQueryMaxTimeMs } from '../query-policy';
 import { toSessionOption } from './shared';
 
 type TaskListInput = {
@@ -16,13 +17,17 @@ type TaskListInput = {
 };
 
 const tasksCollection = (db: Db) => db.collection<TaskDocument>(TASKS_COLLECTION);
+const QUERY_MAX_TIME_MS = resolveQueryMaxTimeMs();
 
 export const countTasks = async (
   db: Db,
   filter: Filter<TaskDocument>,
   session: DbSession = null,
 ): Promise<number> =>
-  tasksCollection(db).countDocuments(filter, toSessionOption(session));
+  tasksCollection(db).countDocuments(filter, {
+    ...toSessionOption(session),
+    maxTimeMS: QUERY_MAX_TIME_MS,
+  });
 
 export const listTasks = async (
   db: Db,
@@ -33,6 +38,7 @@ export const listTasks = async (
     .sort({ created_at: 1 })
     .skip(input.offset)
     .limit(input.limit)
+    .maxTimeMS(QUERY_MAX_TIME_MS)
     .toArray();
 
 export const insertTask = async (

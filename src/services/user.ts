@@ -3,6 +3,7 @@ import bcrypt from 'bcrypt';
 import type { Db } from 'mongodb';
 import type { DbSession } from '../db/transactions';
 import { runInTransaction } from '../db/transactions';
+import { normalizePagination } from '../db/query-policy';
 import {
   countUsers,
   deleteUserById,
@@ -76,13 +77,23 @@ export const listUsers = async (
   db: Db,
   options: ListUsersOptions,
 ): Promise<{ data: UserDocument[]; total: number }> => {
+  const pagination = normalizePagination(
+    {
+      limit: options.limit,
+      offset: options.offset,
+    },
+    {
+      defaultLimit: 100,
+      maxLimit: 200,
+    },
+  );
   const filter = options.orgId ? { org_id: options.orgId } : {};
   const [total, data] = await Promise.all([
     countUsers(db, filter),
     listUsersRepo(db, {
       filter,
-      limit: options.limit,
-      offset: options.offset,
+      limit: pagination.limit,
+      offset: pagination.offset,
       session: null,
     }),
   ]);

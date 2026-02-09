@@ -3,6 +3,7 @@ import { Db } from 'mongodb';
 import { AuditLog, verifyChain, AUDIT_COLLECTION } from '../services/audit';
 import { requireAuth } from '../middleware/auth';
 import { requirePermission } from '../middleware/rbac';
+import { normalizePagination, resolveQueryMaxTimeMs } from '../db/query-policy';
 
 /**
  * 审计日志查询参数 Schema
@@ -140,6 +141,8 @@ const AuditLogsErrorSchema = t.Object({
   message: t.Optional(t.String()),
 });
 
+const QUERY_MAX_TIME_MS = resolveQueryMaxTimeMs();
+
 /**
  * 纯函数：构建 MongoDB 查询过滤器
  *
@@ -217,18 +220,30 @@ const queryAuditLogs = async (
   const filter = buildQueryFilter(query);
 
   // 设置分页参数
-  const limit = query.limit ?? 100;
-  const offset = query.offset ?? 0;
+  const pagination = normalizePagination(
+    {
+      limit: query.limit,
+      offset: query.offset,
+    },
+    {
+      defaultLimit: 100,
+      maxLimit: 1_000,
+      maxOffset: 100_000,
+    },
+  );
 
   // 查询总数
-  const total = await collection.countDocuments(filter);
+  const total = await collection.countDocuments(filter, {
+    maxTimeMS: QUERY_MAX_TIME_MS,
+  });
 
   // 查询日志（按 _sequence 升序排列）
   const logs = await collection
     .find(filter)
     .sort({ _sequence: 1 })
-    .skip(offset)
-    .limit(limit)
+    .skip(pagination.offset)
+    .limit(pagination.limit)
+    .maxTimeMS(QUERY_MAX_TIME_MS)
     .toArray();
 
   return { logs, total };

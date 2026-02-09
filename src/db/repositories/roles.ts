@@ -6,6 +6,7 @@ import type {
 } from 'mongodb';
 import { ROLES_COLLECTION, type RoleDocument } from '../collections';
 import type { DbSession } from '../transactions';
+import { resolveQueryMaxTimeMs } from '../query-policy';
 import { toSessionOption } from './shared';
 
 type RoleListInput = {
@@ -16,6 +17,7 @@ type RoleListInput = {
 };
 
 const rolesCollection = (db: Db) => db.collection<RoleDocument>(ROLES_COLLECTION);
+const QUERY_MAX_TIME_MS = resolveQueryMaxTimeMs();
 
 export const findRoleById = async (
   db: Db,
@@ -75,7 +77,10 @@ export const countRoles = async (
   filter: Filter<RoleDocument>,
   session: DbSession = null,
 ): Promise<number> =>
-  rolesCollection(db).countDocuments(filter, toSessionOption(session));
+  rolesCollection(db).countDocuments(filter, {
+    ...toSessionOption(session),
+    maxTimeMS: QUERY_MAX_TIME_MS,
+  });
 
 export const listRoles = async (
   db: Db,
@@ -86,6 +91,7 @@ export const listRoles = async (
     .sort({ created_at: 1 })
     .skip(input.offset)
     .limit(input.limit)
+    .maxTimeMS(QUERY_MAX_TIME_MS)
     .toArray();
 
 export const insertRole = async (

@@ -4,6 +4,7 @@ import {
   TaskDocument,
   TaskStatusType,
 } from '../db/collections';
+import { normalizePagination } from '../db/query-policy';
 import {
   countTasks,
   insertTask,
@@ -50,12 +51,22 @@ export const listTaskDocuments = async (
   db: Db,
   input: ListTasksInput,
 ): Promise<{ data: TaskDocument[]; total: number }> => {
+  const pagination = normalizePagination(
+    {
+      limit: input.limit,
+      offset: input.offset,
+    },
+    {
+      defaultLimit: 100,
+      maxLimit: 500,
+    },
+  );
   const [total, data] = await Promise.all([
     countTasks(db, input.filter),
     listTasks(db, {
       filter: input.filter,
-      limit: input.limit,
-      offset: input.offset,
+      limit: pagination.limit,
+      offset: pagination.offset,
       session: null,
     }),
   ]);

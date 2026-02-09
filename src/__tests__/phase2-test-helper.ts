@@ -41,6 +41,7 @@ type Cursor<TDoc extends InMemoryDoc> = {
   sort: (spec: Record<string, 1 | -1>) => Cursor<TDoc>;
   skip: (count: number) => Cursor<TDoc>;
   limit: (count: number) => Cursor<TDoc>;
+  maxTimeMS: (value: number) => Cursor<TDoc>;
   toArray: () => Promise<TDoc[]>;
 };
 
@@ -153,6 +154,7 @@ const createCursor = <TDoc extends InMemoryDoc>(items: TDoc[]): Cursor<TDoc> => 
       rows = rows.slice(0, count);
       return cursor;
     },
+    maxTimeMS: () => cursor,
     toArray: async () => [...rows],
   };
   return cursor;

@@ -6,6 +6,7 @@ import type {
 } from 'mongodb';
 import { USERS_COLLECTION, type UserDocument } from '../collections';
 import type { DbSession } from '../transactions';
+import { resolveQueryMaxTimeMs } from '../query-policy';
 import { toSessionOption } from './shared';
 
 type UserListInput = {
@@ -16,6 +17,7 @@ type UserListInput = {
 };
 
 const usersCollection = (db: Db) => db.collection<UserDocument>(USERS_COLLECTION);
+const QUERY_MAX_TIME_MS = resolveQueryMaxTimeMs();
 
 export const findUserById = async (
   db: Db,
@@ -56,7 +58,10 @@ export const countUsers = async (
   filter: Filter<UserDocument>,
   session: DbSession = null,
 ): Promise<number> =>
-  usersCollection(db).countDocuments(filter, toSessionOption(session));
+  usersCollection(db).countDocuments(filter, {
+    ...toSessionOption(session),
+    maxTimeMS: QUERY_MAX_TIME_MS,
+  });
 
 export const listUsers = async (
   db: Db,
@@ -67,6 +72,7 @@ export const listUsers = async (
     .sort({ created_at: 1 })
     .skip(input.offset)
     .limit(input.limit)
+    .maxTimeMS(QUERY_MAX_TIME_MS)
     .toArray();
 
 export const insertUser = async (

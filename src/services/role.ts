@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import type { Db } from 'mongodb';
 import type { DbSession } from '../db/transactions';
+import { normalizePagination } from '../db/query-policy';
 import {
   countRoles,
   deleteRoleById,
@@ -46,13 +47,23 @@ export const listRoles = async (
   db: Db,
   options: ListRolesOptions,
 ): Promise<{ data: RoleDocument[]; total: number }> => {
+  const pagination = normalizePagination(
+    {
+      limit: options.limit,
+      offset: options.offset,
+    },
+    {
+      defaultLimit: 100,
+      maxLimit: 200,
+    },
+  );
   const filter = options.orgId ? { org_id: options.orgId } : {};
   const [total, data] = await Promise.all([
     countRoles(db, filter),
     listRolesRepo(db, {
       filter,
-      limit: options.limit,
-      offset: options.offset,
+      limit: pagination.limit,
+      offset: pagination.offset,
       session: null,
     }),
   ]);
