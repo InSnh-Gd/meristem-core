@@ -1,19 +1,20 @@
 import { Db } from 'mongodb';
 import { Msg } from 'nats';
+import { Effect } from 'effect';
 import { NODES_COLLECTION, type NodeDocument } from '../db/collections';
+import { isFeatureEnabled } from '../config/feature-flags';
 import { createLogger } from '../utils/logger';
 import type { TraceContext } from '../utils/trace-context';
+import {
+  decodeHeartbeatBoundary,
+  decodeJsonBoundary,
+  runBoundarySync,
+  type HeartbeatMessage,
+} from './schema-boundary';
 
 /**
  * 心跳消息类型定义（来自 EVENT_BUS_SPEC.md §6.2）
  */
-type HeartbeatMessage = {
-  node_id: string;
-  ts: number;
-  v: number;
-  claimed_ip?: string;
-};
-
 /**
  * 心跳 ACK 响应类型（来自 EVENT_BUS_SPEC.md §6.3）
  */
@@ -31,6 +32,26 @@ const DEFAULT_SPS = 1280; // 默认安全负载大小（Lv2 UDP Relay）
 
 const formatError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
+
+const decodeHeartbeatMessage = (
+  msg: Msg,
+): { ok: true; data: HeartbeatMessage } | { ok: false; reason: string } => {
+  const fastPathEnabled = isFeatureEnabled('ENABLE_FASTPATH_HEARTBEAT');
+  const program = decodeJsonBoundary(msg.data, 'heartbeat').pipe(
+    Effect.flatMap((payload) => decodeHeartbeatBoundary(payload, fastPathEnabled)),
+  );
+  const result = runBoundarySync(program);
+  if (result.ok) {
+    return {
+      ok: true,
+      data: result.value,
+    };
+  }
+  return {
+    ok: false,
+    reason: result.error.code,
+  };
+};
 
 /**
  * 纯函数：更新节点心跳状态
@@ -114,14 +135,14 @@ export const handleHeartbeatMessage = async (
 ): Promise<void> => {
   const logger = createLogger(traceContext);
   try {
-    // 解析心跳消息（使用明确的类型断言）
-    const data = JSON.parse(msg.data.toString()) as HeartbeatMessage;
-
-    // 验证必需字段
-    if (!data.node_id || !data.ts || typeof data.v !== 'number') {
-      logger.error('[Heartbeat] 无效的心跳消息格式:', { data });
+    const decoded = decodeHeartbeatMessage(msg);
+    if (!decoded.ok) {
+      logger.error('[Heartbeat] 无效的心跳消息格式:', {
+        reason: decoded.reason,
+      });
       return;
     }
+    const data = decoded.data;
 
     // 更新节点心跳状态
     const timestamp = new Date(data.ts);
