@@ -8,6 +8,7 @@ import {
   type AuditEventInput,
   type AuditLog,
 } from '../services/audit';
+import { respondWithCode, respondWithError } from './route-errors';
 
 export const BootstrapRequestBodySchema = t.Object({
   bootstrap_token: t.String({
@@ -51,31 +52,15 @@ export const bootstrapRoute = (
       const { bootstrap_token, username, password } = body;
 
       if (!validateBootstrapToken(bootstrap_token)) {
-        set.status = 400;
-        return {
-          success: false,
-          error: 'Invalid bootstrap token',
-        };
+        return respondWithCode(set, 'INVALID_BOOTSTRAP_TOKEN');
       }
 
       let user: Awaited<ReturnType<typeof createFirstUser>>;
       try {
         user = await createFirstUser(db, username, password);
       } catch (error) {
-        if (error instanceof Error && error.message === 'bootstrap already completed') {
-          set.status = 409;
-          return {
-            success: false,
-            error: 'Bootstrap already completed',
-          };
-        }
-
         console.error('[Bootstrap] failed to create first user', error);
-        set.status = 500;
-        return {
-          success: false,
-          error: 'Unable to complete bootstrap',
-        };
+        return respondWithError(set, error);
       }
 
       const traceId = extractTraceId(request.headers) ?? generateTraceId();

@@ -6,6 +6,7 @@ import { DEFAULT_ORG_ID } from '../services/bootstrap';
 import { createInvitation, acceptInvitation } from '../services/invitation';
 import { ensureRolesBelongToOrg } from '../services/role';
 import { ensureSuperadminAccess } from './route-auth';
+import { respondWithCode, respondWithError } from './route-errors';
 import {
   assignRoleToUser,
   createUser,
@@ -40,7 +41,10 @@ const GenericSuccessSchema = t.Object({
 const UsersListResponseSchema = t.Object({
   success: t.Literal(true),
   data: t.Array(UserPublicSchema),
-  total: t.Number(),
+  page_info: t.Object({
+    has_next: t.Boolean(),
+    next_cursor: t.Union([t.String(), t.Null()]),
+  }),
 });
 
 const UserSingleResponseSchema = t.Object({
@@ -68,7 +72,7 @@ const UserUpdateRequestSchema = t.Object({
 const UsersQuerySchema = t.Object({
   org_id: t.Optional(t.String({ minLength: 1 })),
   limit: t.Optional(t.Numeric({ minimum: 1, maximum: 200 })),
-  offset: t.Optional(t.Numeric({ minimum: 0 })),
+  cursor: t.Optional(t.String({ minLength: 1 })),
 });
 
 const UserInvitationCreateRequestSchema = t.Object({
@@ -113,24 +117,30 @@ export const usersRoute = (app: Elysia, db: Db): Elysia => {
         return denied;
       }
 
-      const { data, total } = await listUsers(db, {
-        orgId: query.org_id,
-        limit: query.limit ?? 100,
-        offset: query.offset ?? 0,
-      });
+      try {
+        const { data, page_info } = await listUsers(db, {
+          orgId: query.org_id,
+          limit: query.limit ?? 100,
+          cursor: query.cursor,
+        });
 
-      return {
-        success: true,
-        data: data.map((user) => toUserPublicView(user)),
-        total,
-      };
+        return {
+          success: true,
+          data: data.map((user) => toUserPublicView(user)),
+          page_info,
+        };
+      } catch (error) {
+        return respondWithError(set, error);
+      }
     },
     {
       query: UsersQuerySchema,
       response: {
         200: UsersListResponseSchema,
+        400: GenericErrorSchema,
         401: GenericErrorSchema,
         403: GenericErrorSchema,
+        500: GenericErrorSchema,
       },
       beforeHandle: [requireAuth],
     },
@@ -192,25 +202,7 @@ export const usersRoute = (app: Elysia, db: Db): Elysia => {
           user_id: user.user_id,
         };
       } catch (error) {
-        if (error instanceof Error && error.message === 'USER_ALREADY_EXISTS') {
-          set.status = 409;
-          return {
-            success: false,
-            error: 'USER_ALREADY_EXISTS',
-          };
-        }
-        if (error instanceof Error && error.message === 'ROLE_ORG_MISMATCH') {
-          set.status = 400;
-          return {
-            success: false,
-            error: 'ROLE_ORG_MISMATCH',
-          };
-        }
-        set.status = 500;
-        return {
-          success: false,
-          error: 'INTERNAL_ERROR',
-        };
+        return respondWithError(set, error);
       }
     },
     {
@@ -252,25 +244,7 @@ export const usersRoute = (app: Elysia, db: Db): Elysia => {
           data: toUserPublicView(user),
         };
       } catch (error) {
-        if (error instanceof Error && error.message === 'USER_ALREADY_EXISTS') {
-          set.status = 409;
-          return {
-            success: false,
-            error: 'USER_ALREADY_EXISTS',
-          };
-        }
-        if (error instanceof Error && error.message === 'ROLE_ORG_MISMATCH') {
-          set.status = 400;
-          return {
-            success: false,
-            error: 'ROLE_ORG_MISMATCH',
-          };
-        }
-        set.status = 500;
-        return {
-          success: false,
-          error: 'INTERNAL_ERROR',
-        };
+        return respondWithError(set, error);
       }
     },
     {
@@ -331,11 +305,7 @@ export const usersRoute = (app: Elysia, db: Db): Elysia => {
       const roleIds = body.role_ids ?? [];
       const rolesOk = await ensureRolesBelongToOrg(db, orgId, roleIds);
       if (!rolesOk) {
-        set.status = 400;
-        return {
-          success: false,
-          error: 'ROLE_ORG_MISMATCH',
-        };
+        return respondWithCode(set, 'ROLE_ORG_MISMATCH');
       }
 
       const invitation = await createInvitation(db, {
@@ -381,47 +351,7 @@ export const usersRoute = (app: Elysia, db: Db): Elysia => {
           user_id: result.user_id,
         };
       } catch (error) {
-        if (error instanceof Error && error.message === 'INVITATION_ALREADY_ACCEPTED') {
-          set.status = 409;
-          return {
-            success: false,
-            error: 'INVITATION_ALREADY_ACCEPTED',
-          };
-        }
-        if (error instanceof Error && error.message === 'INVITATION_NOT_FOUND') {
-          set.status = 404;
-          return {
-            success: false,
-            error: 'INVITATION_NOT_FOUND',
-          };
-        }
-        if (error instanceof Error && error.message === 'INVITATION_EXPIRED') {
-          set.status = 410;
-          return {
-            success: false,
-            error: 'INVITATION_EXPIRED',
-          };
-        }
-        if (error instanceof Error && error.message === 'USER_ALREADY_EXISTS') {
-          set.status = 409;
-          return {
-            success: false,
-            error: 'USER_ALREADY_EXISTS',
-          };
-        }
-        if (error instanceof Error && error.message === 'ROLE_ORG_MISMATCH') {
-          set.status = 400;
-          return {
-            success: false,
-            error: 'ROLE_ORG_MISMATCH',
-          };
-        }
-
-        set.status = 500;
-        return {
-          success: false,
-          error: 'INTERNAL_ERROR',
-        };
+        return respondWithError(set, error);
       }
     },
     {
@@ -459,18 +389,7 @@ export const usersRoute = (app: Elysia, db: Db): Elysia => {
           data: toUserPublicView(user),
         };
       } catch (error) {
-        if (error instanceof Error && error.message === 'ROLE_ORG_MISMATCH') {
-          set.status = 400;
-          return {
-            success: false,
-            error: 'ROLE_ORG_MISMATCH',
-          };
-        }
-        set.status = 500;
-        return {
-          success: false,
-          error: 'INTERNAL_ERROR',
-        };
+        return respondWithError(set, error);
       }
     },
     {

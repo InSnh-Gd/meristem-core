@@ -4,9 +4,12 @@ import {
   TaskDocument,
   TaskStatusType,
 } from '../db/collections';
-import { normalizePagination } from '../db/query-policy';
 import {
-  countTasks,
+  decodeCreatedAtCursor,
+  encodeCreatedAtCursor,
+  normalizeCursorPagination,
+} from '../db/query-policy';
+import {
   insertTask,
   listTasks,
   updateTaskById,
@@ -22,7 +25,12 @@ export type CreateTaskInput = Omit<TaskDocument, 'created_at'>;
 export type ListTasksInput = {
   filter: Filter<TaskDocument>;
   limit: number;
-  offset: number;
+  cursor?: string;
+};
+
+type CursorPageInfo = {
+  has_next: boolean;
+  next_cursor: string | null;
 };
 
 const DEFAULT_ASSIGNMENT_STATUS: TaskStatusType = 'RUNNING';
@@ -50,30 +58,42 @@ export const createTask = async (
 export const listTaskDocuments = async (
   db: Db,
   input: ListTasksInput,
-): Promise<{ data: TaskDocument[]; total: number }> => {
-  const pagination = normalizePagination(
+): Promise<{ data: TaskDocument[]; page_info: CursorPageInfo }> => {
+  const pagination = normalizeCursorPagination(
     {
       limit: input.limit,
-      offset: input.offset,
+      cursor: input.cursor,
     },
     {
       defaultLimit: 100,
       maxLimit: 500,
     },
   );
-  const [total, data] = await Promise.all([
-    countTasks(db, input.filter),
-    listTasks(db, {
-      filter: input.filter,
-      limit: pagination.limit,
-      offset: pagination.offset,
-      session: null,
-    }),
-  ]);
+  const cursor = pagination.cursor
+    ? decodeCreatedAtCursor(pagination.cursor)
+    : null;
+  const rows = await listTasks(db, {
+    filter: input.filter,
+    limit: pagination.limit,
+    cursor,
+    session: null,
+  });
+  const hasNext = rows.length > pagination.limit;
+  const data = hasNext ? rows.slice(0, pagination.limit) : rows;
+  const last = data.at(-1);
 
   return {
     data,
-    total,
+    page_info: {
+      has_next: hasNext,
+      next_cursor:
+        hasNext && last
+          ? encodeCreatedAtCursor({
+              createdAt: last.created_at,
+              tieBreaker: last.task_id,
+            })
+          : null,
+    },
   };
 };
 

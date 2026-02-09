@@ -263,7 +263,7 @@ test('second bootstrap attempt is rejected after first user exists', async (): P
   expect(secondResponse.status).toBe(409);
   expect(secondPayload).toEqual({
     success: false,
-    error: 'Bootstrap already completed',
+    error: 'BOOTSTRAP_ALREADY_COMPLETED',
   });
   expect(state.users).toHaveLength(1);
 }, 20_000);
@@ -278,7 +278,7 @@ test('login fails on fresh database before bootstrap', async (): Promise<void> =
   expect(loginResponse.status).toBe(401);
   expect(loginPayload).toEqual({
     success: false,
-    error: 'Invalid credentials',
+    error: 'AUTH_INVALID_CREDENTIALS',
   });
 }, 20_000);
 
@@ -295,7 +295,7 @@ test('login rejects wrong password after bootstrap', async (): Promise<void> => 
   expect(loginResponse.status).toBe(401);
   expect(loginPayload).toEqual({
     success: false,
-    error: 'Invalid credentials',
+    error: 'AUTH_INVALID_CREDENTIALS',
   });
 }, 20_000);
 

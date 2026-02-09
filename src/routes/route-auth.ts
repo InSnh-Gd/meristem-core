@@ -1,13 +1,11 @@
 import type { AuthStore } from '../middleware/auth';
+import { respondWithCode, type RouteErrorResponse } from './route-errors';
 
 type ResponseSetter = {
   status?: unknown;
 };
 
-export type AuthorizationErrorResponse = {
-  success: false;
-  error: 'UNAUTHORIZED' | 'ACCESS_DENIED';
-};
+export type AuthorizationErrorResponse = RouteErrorResponse;
 
 export const ensureSuperadminAccess = (
   store: Record<string, unknown>,
@@ -15,19 +13,11 @@ export const ensureSuperadminAccess = (
 ): AuthorizationErrorResponse | null => {
   const authStore = store as unknown as AuthStore;
   if (!authStore.user) {
-    set.status = 401;
-    return {
-      success: false,
-      error: 'UNAUTHORIZED',
-    };
+    return respondWithCode(set, 'UNAUTHORIZED');
   }
 
   if (!authStore.user.permissions.includes('*')) {
-    set.status = 403;
-    return {
-      success: false,
-      error: 'ACCESS_DENIED',
-    };
+    return respondWithCode(set, 'ACCESS_DENIED');
   }
 
   return null;

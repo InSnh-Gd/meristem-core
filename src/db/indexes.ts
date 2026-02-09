@@ -24,7 +24,8 @@ const INDEX_PLANS: readonly CollectionIndexPlan[] = [
     specs: [
       { key: { user_id: 1 }, name: 'uniq_user_id', unique: true },
       { key: { username: 1 }, name: 'uniq_username', unique: true },
-      { key: { org_id: 1, created_at: 1 }, name: 'idx_users_org_created' },
+      { key: { created_at: 1, user_id: 1 }, name: 'idx_users_created_user' },
+      { key: { org_id: 1, created_at: 1, user_id: 1 }, name: 'idx_users_org_created_user' },
     ],
   },
   {
@@ -32,19 +33,21 @@ const INDEX_PLANS: readonly CollectionIndexPlan[] = [
     specs: [
       { key: { role_id: 1 }, name: 'uniq_role_id', unique: true },
       { key: { org_id: 1, name: 1 }, name: 'uniq_roles_org_name', unique: true },
-      { key: { org_id: 1, created_at: 1 }, name: 'idx_roles_org_created' },
+      { key: { created_at: 1, role_id: 1 }, name: 'idx_roles_created_role' },
+      { key: { org_id: 1, created_at: 1, role_id: 1 }, name: 'idx_roles_org_created_role' },
     ],
   },
   {
     collection: TASKS_COLLECTION,
     specs: [
       { key: { task_id: 1 }, name: 'uniq_task_id', unique: true },
-      { key: { org_id: 1, created_at: 1 }, name: 'idx_tasks_org_created' },
+      { key: { created_at: 1, task_id: 1 }, name: 'idx_tasks_created_task' },
+      { key: { org_id: 1, created_at: 1, task_id: 1 }, name: 'idx_tasks_org_created_task' },
       {
-        key: { 'status.type': 1, target_node_id: 1, created_at: 1 },
-        name: 'idx_tasks_status_target_created',
+        key: { 'status.type': 1, target_node_id: 1, created_at: 1, task_id: 1 },
+        name: 'idx_tasks_status_target_created_task',
       },
-      { key: { owner_id: 1, created_at: 1 }, name: 'idx_tasks_owner_created' },
+      { key: { owner_id: 1, created_at: 1, task_id: 1 }, name: 'idx_tasks_owner_created_task' },
       { key: { trace_id: 1 }, name: 'idx_tasks_trace' },
     ],
   },

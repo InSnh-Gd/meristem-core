@@ -1,3 +1,5 @@
+import { DomainError } from '../errors/domain-error';
+
 type EnvMap = Readonly<Record<string, string | undefined>>;
 
 type PaginationInput = {
@@ -5,10 +7,38 @@ type PaginationInput = {
   offset?: number;
 };
 
+type CursorPaginationInput = {
+  limit?: number;
+  cursor?: string;
+};
+
 type PaginationPolicy = {
   defaultLimit: number;
   maxLimit: number;
   maxOffset?: number;
+};
+
+type CursorPaginationPolicy = {
+  defaultLimit: number;
+  maxLimit: number;
+};
+
+type CreatedAtCursorPayload = {
+  created_at: string;
+  tie_breaker: string;
+};
+
+type SequenceCursorPayload = {
+  sequence: number;
+};
+
+export type CreatedAtCursor = {
+  createdAt: Date;
+  tieBreaker: string;
+};
+
+export type SequenceCursor = {
+  sequence: number;
 };
 
 const QUERY_TIMEOUT_ENV = 'MERISTEM_DATABASE_QUERY_MAX_TIME_MS';
@@ -32,6 +62,22 @@ const clamp = (value: number, min: number, max: number): number => {
     return max;
   }
   return value;
+};
+
+const parseCursor = (cursor: string): Record<string, unknown> => {
+  try {
+    const decoded = Buffer.from(cursor, 'base64url').toString('utf8');
+    const parsed = JSON.parse(decoded);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new DomainError('INVALID_CURSOR');
+    }
+    return parsed as Record<string, unknown>;
+  } catch (error) {
+    if (error instanceof DomainError) {
+      throw error;
+    }
+    throw new DomainError('INVALID_CURSOR', { cause: error });
+  }
 };
 
 export const resolveQueryMaxTimeMs = (
@@ -64,4 +110,79 @@ export const normalizePagination = (
   const offset = clamp(toInteger(input.offset, 0), 0, maxOffset);
 
   return { limit, offset };
+};
+
+export const encodeCreatedAtCursor = (cursor: CreatedAtCursor): string =>
+  Buffer.from(
+    JSON.stringify({
+      created_at: cursor.createdAt.toISOString(),
+      tie_breaker: cursor.tieBreaker,
+    } satisfies CreatedAtCursorPayload),
+    'utf8',
+  ).toString('base64url');
+
+export const decodeCreatedAtCursor = (cursor: string): CreatedAtCursor => {
+  const parsed = parseCursor(cursor);
+  const createdAtRaw = parsed.created_at;
+  const tieBreakerRaw = parsed.tie_breaker;
+
+  if (typeof createdAtRaw !== 'string' || typeof tieBreakerRaw !== 'string') {
+    throw new DomainError('INVALID_CURSOR');
+  }
+
+  const createdAtMs = Date.parse(createdAtRaw);
+  if (!Number.isFinite(createdAtMs)) {
+    throw new DomainError('INVALID_CURSOR');
+  }
+
+  if (tieBreakerRaw.length === 0) {
+    throw new DomainError('INVALID_CURSOR');
+  }
+
+  return {
+    createdAt: new Date(createdAtMs),
+    tieBreaker: tieBreakerRaw,
+  };
+};
+
+export const normalizeCursorPagination = (
+  input: CursorPaginationInput,
+  policy: CursorPaginationPolicy,
+): { limit: number; cursor: string | null } => {
+  const maxLimit = Math.max(1, Math.trunc(policy.maxLimit));
+  const defaultLimit = clamp(
+    Math.max(1, Math.trunc(policy.defaultLimit)),
+    1,
+    maxLimit,
+  );
+  const limit = clamp(toInteger(input.limit, defaultLimit), 1, maxLimit);
+
+  if (typeof input.cursor !== 'string' || input.cursor.length === 0) {
+    return { limit, cursor: null };
+  }
+
+  return {
+    limit,
+    cursor: input.cursor,
+  };
+};
+
+export const encodeSequenceCursor = (cursor: SequenceCursor): string =>
+  Buffer.from(
+    JSON.stringify({ sequence: cursor.sequence } satisfies SequenceCursorPayload),
+    'utf8',
+  ).toString('base64url');
+
+export const decodeSequenceCursor = (cursor: string): SequenceCursor => {
+  const parsed = parseCursor(cursor);
+  const sequence = parsed.sequence;
+  if (
+    typeof sequence !== 'number' ||
+    !Number.isFinite(sequence) ||
+    !Number.isInteger(sequence) ||
+    sequence < 0
+  ) {
+    throw new DomainError('INVALID_CURSOR');
+  }
+  return { sequence };
 };

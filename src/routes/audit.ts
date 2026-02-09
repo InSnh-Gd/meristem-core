@@ -3,7 +3,13 @@ import { Db } from 'mongodb';
 import { AuditLog, verifyChain, AUDIT_COLLECTION } from '../services/audit';
 import { requireAuth } from '../middleware/auth';
 import { requirePermission } from '../middleware/rbac';
-import { normalizePagination, resolveQueryMaxTimeMs } from '../db/query-policy';
+import {
+  decodeSequenceCursor,
+  encodeSequenceCursor,
+  normalizeCursorPagination,
+  resolveQueryMaxTimeMs,
+} from '../db/query-policy';
+import { respondWithError } from './route-errors';
 
 /**
  * 审计日志查询参数 Schema
@@ -71,12 +77,11 @@ export const AuditLogsQuerySchema = t.Object({
   })),
 
   /**
-   * 分页偏移
-   * 可选，默认 0
+   * Cursor 分页游标
    */
-  offset: t.Optional(t.Numeric({
-    description: '分页偏移（默认 0）',
-    minimum: 0,
+  cursor: t.Optional(t.String({
+    description: 'Cursor 分页游标',
+    minLength: 1,
   })),
 });
 
@@ -130,8 +135,13 @@ export const AuditLogsResponseSchema = t.Object({
   chainValid: t.Boolean({
     description: '哈希链是否完整有效',
   }),
-  total: t.Number({
-    description: '符合条件的日志总数',
+  page_info: t.Object({
+    has_next: t.Boolean({
+      description: '是否有下一页',
+    }),
+    next_cursor: t.Union([t.String(), t.Null()], {
+      description: '下一页 cursor',
+    }),
   }),
 });
 
@@ -142,6 +152,9 @@ const AuditLogsErrorSchema = t.Object({
 });
 
 const QUERY_MAX_TIME_MS = resolveQueryMaxTimeMs();
+
+const hasObjectKeys = (record: Record<string, unknown>): boolean =>
+  Object.keys(record).length > 0;
 
 /**
  * 纯函数：构建 MongoDB 查询过滤器
@@ -200,7 +213,7 @@ const buildQueryFilter = (query: {
  *
  * @param db - MongoDB 数据库实例
  * @param query - 审计日志查询参数
- * @returns 审计日志列表和总数
+ * @returns 审计日志列表与分页信息
  */
 const queryAuditLogs = async (
   db: Db,
@@ -211,42 +224,66 @@ const queryAuditLogs = async (
     level?: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' | 'FATAL';
     source?: string;
     limit?: number;
-    offset?: number;
+    cursor?: string;
   }
-): Promise<{ logs: AuditLog[]; total: number }> => {
+): Promise<{
+  logs: AuditLog[];
+  page_info: {
+    has_next: boolean;
+    next_cursor: string | null;
+  };
+}> => {
   const collection = db.collection<AuditLog>(AUDIT_COLLECTION);
 
   // 构建查询过滤器
   const filter = buildQueryFilter(query);
 
   // 设置分页参数
-  const pagination = normalizePagination(
+  const pagination = normalizeCursorPagination(
     {
       limit: query.limit,
-      offset: query.offset,
+      cursor: query.cursor,
     },
     {
       defaultLimit: 100,
       maxLimit: 1_000,
-      maxOffset: 100_000,
     },
   );
+  const cursor = pagination.cursor
+    ? decodeSequenceCursor(pagination.cursor)
+    : null;
+  const cursorFilter: Record<string, unknown> = cursor
+    ? { _sequence: { $gt: cursor.sequence } }
+    : {};
+  const finalFilter = hasObjectKeys(filter)
+    ? (
+        hasObjectKeys(cursorFilter)
+          ? { $and: [filter, cursorFilter] }
+          : filter
+      )
+    : cursorFilter;
 
-  // 查询总数
-  const total = await collection.countDocuments(filter, {
-    maxTimeMS: QUERY_MAX_TIME_MS,
-  });
-
-  // 查询日志（按 _sequence 升序排列）
-  const logs = await collection
-    .find(filter)
+  // 查询日志（按 _sequence 升序排列，基于 cursor）
+  const rows = await collection
+    .find(finalFilter)
     .sort({ _sequence: 1 })
-    .skip(pagination.offset)
-    .limit(pagination.limit)
+    .limit(pagination.limit + 1)
     .maxTimeMS(QUERY_MAX_TIME_MS)
     .toArray();
+  const hasNext = rows.length > pagination.limit;
+  const logs = hasNext ? rows.slice(0, pagination.limit) : rows;
+  const last = logs.at(-1);
 
-  return { logs, total };
+  return {
+    logs,
+    page_info: {
+      has_next: hasNext,
+      next_cursor:
+        hasNext && last
+          ? encodeSequenceCursor({ sequence: last._sequence })
+          : null,
+    },
+  };
 };
 
 /**
@@ -256,9 +293,9 @@ const queryAuditLogs = async (
  *
  * 功能说明：
  * 1. 支持按时间范围、操作者、日志级别、来源等条件过滤
- * 2. 支持分页查询（limit/offset）
+ * 2. 支持分页查询（limit/cursor）
  * 3. 自动验证哈希链完整性
- * 4. 返回日志列表和验证状态
+ * 4. 返回日志列表和验证状态及分页游标
  *
  * 权限要求：
  * - 需要认证（待 Task 7 实现 requireAuth）
@@ -270,24 +307,29 @@ const queryAuditLogs = async (
 export const auditRoute = (app: Elysia, db: Db): Elysia => {
   app.get(
     '/api/v1/audit-logs',
-    async ({ query }) => {
-      // 查询审计日志
-      const { logs, total } = await queryAuditLogs(db, query);
+    async ({ query, set }) => {
+      try {
+        // 查询审计日志
+        const { logs, page_info } = await queryAuditLogs(db, query);
 
-      // 验证哈希链完整性
-      const chainVerification = verifyChain(logs);
+        // 验证哈希链完整性
+        const chainVerification = verifyChain(logs);
 
-      return {
-        success: true,
-        data: logs,
-        chainValid: chainVerification.valid,
-        total,
-      };
+        return {
+          success: true,
+          data: logs,
+          chainValid: chainVerification.valid,
+          page_info,
+        };
+      } catch (error) {
+        return respondWithError(set, error);
+      }
     },
     {
       query: AuditLogsQuerySchema,
       response: {
         200: AuditLogsResponseSchema,
+        400: AuditLogsErrorSchema,
         401: AuditLogsErrorSchema,
         403: AuditLogsErrorSchema,
         500: AuditLogsErrorSchema,

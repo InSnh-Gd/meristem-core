@@ -7,6 +7,7 @@ import { bootstrapRoute } from './routes/bootstrap';
 import { authRoute } from './routes/auth';
 import { tasksRoute } from './routes/tasks';
 import { resultsRoute } from './routes/results';
+import { metricsRoute } from './routes/metrics';
 import { connectNats, subscribe } from './nats/connection';
 import { handleHeartbeatMessage, startHeartbeatMonitor } from './services/heartbeat';
 import { createPulseMessageHandler } from './services/pulse-ingest';
@@ -100,6 +101,7 @@ export const startApp = async (config: AppConfig = {}): Promise<Elysia> => {
   rolesRoute(app, db);
   tasksRoute(app, db);
   resultsRoute(app, db);
+  metricsRoute(app);
   wsRoute(app, { wsPath: coreConfig.server.ws_path });
 
   app.listen({ port });

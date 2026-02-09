@@ -2,6 +2,7 @@ import { Elysia, t } from 'elysia';
 import { randomUUID } from 'crypto';
 import { Db } from 'mongodb';
 import { TaskPayload } from '../db/collections';
+import { DomainError } from '../errors/domain-error';
 import {
   CreateTaskInput,
   createTask,
@@ -13,6 +14,7 @@ import { validateCallDepthFromHeaders } from '../utils/call-depth';
 import { requireAuth, type AuthStore } from '../middleware/auth';
 import { DEFAULT_ORG_ID } from '../services/bootstrap';
 import { getUserById } from '../services/user';
+import { respondWithCode, respondWithError } from './route-errors';
 
 const DEFAULT_LEASE_DURATION_MS = 60 * 60 * 1000;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
@@ -44,7 +46,7 @@ const TaskErrorResponseSchema = t.Object({
 
 const TasksListQuerySchema = t.Object({
   limit: t.Optional(t.Numeric({ minimum: 1, maximum: 500 })),
-  offset: t.Optional(t.Numeric({ minimum: 0 })),
+  cursor: t.Optional(t.String({ minLength: 1 })),
 });
 
 const TasksListItemSchema = t.Object({
@@ -60,7 +62,10 @@ const TasksListItemSchema = t.Object({
 const TasksListResponseSchema = t.Object({
   success: t.Literal(true),
   data: t.Array(TasksListItemSchema),
-  total: t.Number(),
+  page_info: t.Object({
+    has_next: t.Boolean(),
+    next_cursor: t.Union([t.String(), t.Null()]),
+  }),
 });
 
 type RawTaskPayload = Record<string, unknown>;
@@ -128,54 +133,51 @@ export const tasksRoute = (app: Elysia, db: Db): Elysia => {
     async ({ query, set, store }) => {
       const authStore = store as AuthStore;
       if (!authStore.user) {
-        set.status = 401;
-        return {
-          success: false,
-          error: 'UNAUTHORIZED',
-        };
+        return respondWithCode(set, 'UNAUTHORIZED');
       }
 
       const limit = query.limit ?? 100;
-      const offset = query.offset ?? 0;
       const filter: Record<string, unknown> = {};
 
       if (!isSuperadmin(authStore)) {
         const actorOrgId = await resolveActorOrgId(db, authStore);
         if (!actorOrgId) {
-          set.status = 401;
-          return {
-            success: false,
-            error: 'UNAUTHORIZED',
-          };
+          return respondWithCode(set, 'UNAUTHORIZED');
         }
         filter.org_id = actorOrgId;
       }
 
-      const { data: tasks, total } = await listTaskDocuments(db, {
-        filter,
-        limit,
-        offset,
-      });
+      try {
+        const { data: tasks, page_info } = await listTaskDocuments(db, {
+          filter,
+          limit,
+          cursor: query.cursor,
+        });
 
-      return {
-        success: true,
-        data: tasks.map((task) => ({
-          task_id: task.task_id,
-          owner_id: task.owner_id,
-          org_id: task.org_id,
-          target_node_id: task.target_node_id,
-          status: task.status.type,
-          availability: task.availability,
-          created_at: task.created_at.toISOString(),
-        })),
-        total,
-      };
+        return {
+          success: true,
+          data: tasks.map((task) => ({
+            task_id: task.task_id,
+            owner_id: task.owner_id,
+            org_id: task.org_id,
+            target_node_id: task.target_node_id,
+            status: task.status.type,
+            availability: task.availability,
+            created_at: task.created_at.toISOString(),
+          })),
+          page_info,
+        };
+      } catch (error) {
+        return respondWithError(set, error);
+      }
     },
     {
       query: TasksListQuerySchema,
       response: {
         200: TasksListResponseSchema,
         401: TaskErrorResponseSchema,
+        400: TaskErrorResponseSchema,
+        500: TaskErrorResponseSchema,
       },
       beforeHandle: [requireAuth],
     },
@@ -187,21 +189,13 @@ export const tasksRoute = (app: Elysia, db: Db): Elysia => {
       const authStore = store as AuthStore;
 
       if (!authStore.user) {
-        set.status = 401;
-        return {
-          success: false,
-          error: 'UNAUTHORIZED',
-        };
+        return respondWithCode(set, 'UNAUTHORIZED');
       }
 
       const traceId = extractTraceId(request.headers) ?? generateTraceId();
       const actorOrgId = await resolveActorOrgId(db, authStore);
       if (!actorOrgId) {
-        set.status = 401;
-        return {
-          success: false,
-          error: 'UNAUTHORIZED',
-        };
+        return respondWithCode(set, 'UNAUTHORIZED');
       }
       const callDepth = validateCallDepthFromHeaders(request.headers);
       if (!callDepth.ok) {
@@ -224,11 +218,7 @@ export const tasksRoute = (app: Elysia, db: Db): Elysia => {
           console.error('[Audit] failed to log invalid call_depth rejection', auditError);
         }
 
-        set.status = 400;
-        return {
-          success: false,
-          error: 'INVALID_CALL_DEPTH',
-        };
+        return respondWithCode(set, 'INVALID_CALL_DEPTH');
       }
 
       const taskId = randomUUID();
@@ -265,11 +255,10 @@ export const tasksRoute = (app: Elysia, db: Db): Elysia => {
         await createTask(db, taskData);
       } catch (error) {
         console.error('[Tasks] failed to persist task', error);
-        set.status = 500;
-        return {
-          success: false,
-          error: 'TASK_CREATION_FAILED',
-        };
+        return respondWithError(
+          set,
+          new DomainError('TASK_CREATION_FAILED', { cause: error }),
+        );
       }
 
       const auditEvent: AuditEventInput = {

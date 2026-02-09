@@ -69,7 +69,8 @@ test('ensureDbIndexes creates expected unique and query indexes', async (): Prom
     expect.arrayContaining([
       expect.objectContaining({ key: { user_id: 1 }, unique: true }),
       expect.objectContaining({ key: { username: 1 }, unique: true }),
-      expect.objectContaining({ key: { org_id: 1, created_at: 1 } }),
+      expect.objectContaining({ key: { created_at: 1, user_id: 1 } }),
+      expect.objectContaining({ key: { org_id: 1, created_at: 1, user_id: 1 } }),
     ]),
   );
 
@@ -77,14 +78,17 @@ test('ensureDbIndexes creates expected unique and query indexes', async (): Prom
     expect.arrayContaining([
       expect.objectContaining({ key: { role_id: 1 }, unique: true }),
       expect.objectContaining({ key: { org_id: 1, name: 1 }, unique: true }),
+      expect.objectContaining({ key: { created_at: 1, role_id: 1 } }),
+      expect.objectContaining({ key: { org_id: 1, created_at: 1, role_id: 1 } }),
     ]),
   );
 
   expect(tasksIndexes).toEqual(
     expect.arrayContaining([
       expect.objectContaining({ key: { task_id: 1 }, unique: true }),
-      expect.objectContaining({ key: { org_id: 1, created_at: 1 } }),
-      expect.objectContaining({ key: { 'status.type': 1, target_node_id: 1, created_at: 1 } }),
+      expect.objectContaining({ key: { created_at: 1, task_id: 1 } }),
+      expect.objectContaining({ key: { org_id: 1, created_at: 1, task_id: 1 } }),
+      expect.objectContaining({ key: { 'status.type': 1, target_node_id: 1, created_at: 1, task_id: 1 } }),
     ]),
   );
 

@@ -12,6 +12,7 @@ import { toSessionOption } from '../db/repositories/shared';
 import { countUsers, insertUser } from '../db/repositories/users';
 import type { DbSession } from '../db/transactions';
 import { runInTransaction } from '../db/transactions';
+import { DomainError } from '../errors/domain-error';
 
 export const DEFAULT_ORG_ID = 'org-default';
 export const SUPERADMIN_ROLE_ID = 'role-superadmin';
@@ -97,7 +98,7 @@ export const createFirstUser = async (db: Db, username: string, password: string
   return runInTransaction(db, async (session) => {
     const existingUsers = await countUsers(db, {}, session);
     if (existingUsers > 0) {
-      throw new Error('bootstrap already completed');
+      throw new DomainError('BOOTSTRAP_ALREADY_COMPLETED');
     }
 
     await ensureDefaultOrgAndRole(db, session);
