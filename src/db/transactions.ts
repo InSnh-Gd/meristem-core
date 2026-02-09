@@ -22,10 +22,15 @@ const DEFAULT_TRANSACTION_OPTIONS: TransactionOptions = {
   maxCommitTimeMS: 5_000,
 };
 
+/**
+ * 解析可用的 Session 工厂：
+ * 1) 优先使用当前 Db 实例挂载的 client；
+ * 2) 若当前 Db 未暴露 client，则回退到连接模块中的共享 client；
+ * 3) 两种来源都必须返回 bind 后的方法，避免 Mongo 驱动因 this 丢失触发运行时异常。
+ */
 const resolveSessionFactory = (db: Db): (() => ClientSession) | null => {
   const dbClient = (db as DbWithClient).client;
   if (dbClient && typeof dbClient.startSession === 'function') {
-    // MongoDB driver methods rely on `this`; return a bound callable.
     return dbClient.startSession.bind(dbClient);
   }
 
@@ -63,8 +68,11 @@ const getNumericField = (value: unknown, key: string): number | null => {
   return typeof candidate === 'number' ? candidate : null;
 };
 
+/**
+ * 识别“事务能力不可用”错误（典型为 standalone Mongo）：
+ * 该类错误不是业务失败，而是部署形态限制；后续会触发安全降级路径。
+ */
 const isTransactionUnsupportedError = (error: unknown): boolean => {
-  // Standalone MongoDB (non-replica-set) rejects transactions with IllegalOperation.
   const code = getNumericField(error, 'code');
   if (code === 20) {
     return true;
@@ -130,8 +138,12 @@ export const runInTransaction = async <T>(
       durationMs: Date.now() - startedAt,
     });
     if (!result.done && isTransactionUnsupportedError(error)) {
-      // Safe fallback: work was not committed inside a transaction.
-      // We rerun once without session to keep non-replica-set environments functional.
+      /**
+       * 事务不可用时的单次降级执行：
+       * - 前置条件：事务体尚未成功完成（result.done=false）；
+       * - 策略：仅重试一次无 session 路径，保证 standalone 环境可用；
+       * - 边界：若事务体已完成或命中其他错误，仍按 TRANSACTION_ABORTED 抛出。
+       */
       return work(null);
     }
     throw toDomainError(error, 'TRANSACTION_ABORTED');

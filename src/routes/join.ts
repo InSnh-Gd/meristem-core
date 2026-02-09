@@ -496,6 +496,10 @@ export const joinRoute = (
 
       let responseData: JoinSuccessData;
       if (useTransactionalIntake) {
+        /**
+         * 新审计主路径：业务写入 + audit_intent 入队同事务提交。
+         * 这样可保证“join 成功响应”与“审计已进入 durable intake”同时成立。
+         */
         try {
           responseData = await runInTransaction(db, async (session) => {
             const result = await executeJoinFlow(session);
@@ -519,6 +523,10 @@ export const joinRoute = (
           };
         }
       } else {
+        /**
+         * 兼容路径（测试注入 logger / 管线未就绪）：
+         * 先完成 join 主流程，再异步尝试审计写入，避免阻塞节点接入。
+         */
         const result = await executeJoinFlow();
         responseData = result.responseData;
         void auditLogger(db, result.auditEvent).catch((auditError) => {

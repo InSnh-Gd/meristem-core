@@ -375,8 +375,12 @@ const collectBacklogCount = async (
   return count;
 };
 
+/**
+ * 维护内存级 backlog 影子计数：
+ * - 热路径优先读该计数，减少每次入队都走 countDocuments 的开销；
+ * - 计数始终钳制为非负，避免异常回滚导致的负值污染。
+ */
 const adjustRuntimeBacklog = (delta: number): void => {
-  // Keep a monotonic non-negative shadow counter for hot-path backpressure checks.
   runtime.backlogCount = Math.max(0, runtime.backlogCount + delta);
 };
 
@@ -597,9 +601,12 @@ const claimPendingIntents = async (
     .limit(runtime.options.batchSize)
     .toArray();
 
+  /**
+   * 第一优先级消费 pending/failed_retriable；
+   * 若批次未满，再回收 lease 过期的 processing，防止进程崩溃后出现“永久卡住”的积压。
+   */
   let claimCandidates = rows;
   if (claimCandidates.length < runtime.options.batchSize) {
-    // Reclaim expired leases so crash/restart cannot permanently stall backlog draining.
     const processing = await collection
       .find({ status: 'processing' })
       .sort({ created_at: 1, event_id: 1 })
@@ -790,6 +797,11 @@ export const enqueueAuditIntent = async (
     };
   }
 
+  /**
+   * 背压判定采用“两段式”：
+   * - 先看内存影子计数（O(1)）；
+   * - 仅在触线时回源 DB 校准，避免计数漂移导致误判。
+   */
   if (runtime.backlogCount >= runtime.options.backlogHardLimit) {
     const backlog = await collectBacklogCount(db, options.session);
     runtime.backlogCount = backlog;
