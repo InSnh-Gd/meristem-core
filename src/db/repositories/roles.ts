@@ -6,13 +6,18 @@ import type {
 } from 'mongodb';
 import { ROLES_COLLECTION, type RoleDocument } from '../collections';
 import type { DbSession } from '../transactions';
+import type { CreatedAtCursor } from '../query-policy';
 import { resolveQueryMaxTimeMs } from '../query-policy';
-import { toSessionOption } from './shared';
+import {
+  applyCreatedAtCursorFilter,
+  executeRepositoryOperation,
+  toSessionOption,
+} from './shared';
 
 type RoleListInput = {
   filter: Filter<RoleDocument>;
   limit: number;
-  offset: number;
+  cursor: CreatedAtCursor | null;
   session: DbSession;
 };
 
@@ -24,9 +29,13 @@ export const findRoleById = async (
   roleId: string,
   session: DbSession = null,
 ): Promise<RoleDocument | null> =>
-  rolesCollection(db).findOne(
-    { role_id: roleId },
-    toSessionOption(session),
+  executeRepositoryOperation(
+    ROLES_COLLECTION,
+    'find_role_by_id',
+    () => rolesCollection(db).findOne(
+      { role_id: roleId },
+      toSessionOption(session),
+    ),
   );
 
 export const findRoleByOrgAndName = async (
@@ -35,9 +44,13 @@ export const findRoleByOrgAndName = async (
   name: string,
   session: DbSession = null,
 ): Promise<RoleDocument | null> =>
-  rolesCollection(db).findOne(
-    { org_id: orgId, name },
-    toSessionOption(session),
+  executeRepositoryOperation(
+    ROLES_COLLECTION,
+    'find_role_by_org_and_name',
+    () => rolesCollection(db).findOne(
+      { org_id: orgId, name },
+      toSessionOption(session),
+    ),
   );
 
 export const findRoleByOrgAndNameExcludingId = async (
@@ -47,13 +60,17 @@ export const findRoleByOrgAndNameExcludingId = async (
   roleId: string,
   session: DbSession = null,
 ): Promise<RoleDocument | null> =>
-  rolesCollection(db).findOne(
-    {
-      org_id: orgId,
-      name,
-      role_id: { $ne: roleId },
-    },
-    toSessionOption(session),
+  executeRepositoryOperation(
+    ROLES_COLLECTION,
+    'find_role_by_org_and_name_excluding_id',
+    () => rolesCollection(db).findOne(
+      {
+        org_id: orgId,
+        name,
+        role_id: { $ne: roleId },
+      },
+      toSessionOption(session),
+    ),
   );
 
 export const findRolesByOrgAndIds = async (
@@ -62,44 +79,66 @@ export const findRolesByOrgAndIds = async (
   roleIds: string[],
   session: DbSession = null,
 ): Promise<RoleDocument[]> =>
-  rolesCollection(db)
-    .find(
-      {
-        org_id: orgId,
-        role_id: { $in: roleIds },
-      },
-      toSessionOption(session),
-    )
-    .toArray();
+  executeRepositoryOperation(
+    ROLES_COLLECTION,
+    'find_roles_by_org_and_ids',
+    () => rolesCollection(db)
+      .find(
+        {
+          org_id: orgId,
+          role_id: { $in: roleIds },
+        },
+        toSessionOption(session),
+      )
+      .toArray(),
+  );
 
 export const countRoles = async (
   db: Db,
   filter: Filter<RoleDocument>,
   session: DbSession = null,
 ): Promise<number> =>
-  rolesCollection(db).countDocuments(filter, {
-    ...toSessionOption(session),
-    maxTimeMS: QUERY_MAX_TIME_MS,
-  });
+  executeRepositoryOperation(
+    ROLES_COLLECTION,
+    'count_roles',
+    () => rolesCollection(db).countDocuments(filter, {
+      ...toSessionOption(session),
+      maxTimeMS: QUERY_MAX_TIME_MS,
+    }),
+  );
 
 export const listRoles = async (
   db: Db,
   input: RoleListInput,
 ): Promise<RoleDocument[]> =>
-  rolesCollection(db)
-    .find(input.filter, toSessionOption(input.session))
-    .sort({ created_at: 1 })
-    .skip(input.offset)
-    .limit(input.limit)
-    .maxTimeMS(QUERY_MAX_TIME_MS)
-    .toArray();
+  executeRepositoryOperation(
+    ROLES_COLLECTION,
+    'list_roles',
+    () => rolesCollection(db)
+      .find(
+        applyCreatedAtCursorFilter(
+          input.filter,
+          input.cursor,
+          'role_id',
+        ),
+        toSessionOption(input.session),
+      )
+      .sort({ created_at: 1, role_id: 1 })
+      .limit(input.limit + 1)
+      .maxTimeMS(QUERY_MAX_TIME_MS)
+      .toArray(),
+  );
 
 export const insertRole = async (
   db: Db,
   role: RoleDocument,
   session: DbSession = null,
 ): Promise<void> => {
-  await rolesCollection(db).insertOne(role, toSessionOption(session));
+  await executeRepositoryOperation(
+    ROLES_COLLECTION,
+    'insert_role',
+    () => rolesCollection(db).insertOne(role, toSessionOption(session)),
+  );
 };
 
 export const updateRoleById = async (
@@ -112,10 +151,14 @@ export const updateRoleById = async (
     returnDocument: 'after',
     ...toSessionOption(session),
   };
-  return rolesCollection(db).findOneAndUpdate(
-    { role_id: roleId },
-    update,
-    options,
+  return executeRepositoryOperation(
+    ROLES_COLLECTION,
+    'update_role_by_id',
+    () => rolesCollection(db).findOneAndUpdate(
+      { role_id: roleId },
+      update,
+      options,
+    ),
   );
 };
 
@@ -124,9 +167,13 @@ export const deleteRoleById = async (
   roleId: string,
   session: DbSession = null,
 ): Promise<number> => {
-  const result = await rolesCollection(db).deleteOne(
-    { role_id: roleId },
-    toSessionOption(session),
+  const result = await executeRepositoryOperation(
+    ROLES_COLLECTION,
+    'delete_role_by_id',
+    () => rolesCollection(db).deleteOne(
+      { role_id: roleId },
+      toSessionOption(session),
+    ),
   );
   return result.deletedCount;
 };

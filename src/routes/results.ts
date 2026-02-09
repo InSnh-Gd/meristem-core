@@ -5,6 +5,8 @@ import { submitResult, type TaskResultPayload, type TaskResultStatus } from '../
 import { logAuditEvent, type AuditEventInput } from '../services/audit';
 import { extractTraceId, generateTraceId } from '../utils/trace-context';
 import { validateCallDepthFromHeaders } from '../utils/call-depth';
+import { DomainError } from '../errors/domain-error';
+import { respondWithCode, respondWithError } from './route-errors';
 
 const ResultsRequestSchema = t.Object({
   task_id: t.String({
@@ -31,7 +33,7 @@ const ResultSuccessSchema = t.Object({
 
 const ResultNotFoundSchema = t.Object({
   success: t.Literal(false),
-  error: t.Literal('Task not found'),
+  error: t.Literal('TASK_NOT_FOUND'),
 });
 
 const GenericErrorSchema = t.Object({
@@ -65,11 +67,7 @@ export const resultsRoute = (app: Elysia, db: Db): Elysia => {
           console.error('[Audit] failed to log invalid call_depth rejection', auditError);
         }
 
-        set.status = 400;
-        return {
-          success: false,
-          error: 'INVALID_CALL_DEPTH',
-        };
+        return respondWithCode(set, 'INVALID_CALL_DEPTH');
       }
 
       const payload: TaskResultPayload = {
@@ -83,19 +81,14 @@ export const resultsRoute = (app: Elysia, db: Db): Elysia => {
         taskResult = await submitResult(db, body.task_id, payload);
       } catch (error) {
         console.error('[Results] failed to persist task result', error);
-        set.status = 500;
-        return {
-          success: false,
-          error: 'RESULT_SUBMISSION_FAILED',
-        };
+        return respondWithError(
+          set,
+          new DomainError('RESULT_SUBMISSION_FAILED', { cause: error }),
+        );
       }
 
       if (!taskResult) {
-        set.status = 404;
-        return {
-          success: false,
-          error: 'Task not found',
-        };
+        return respondWithCode(set, 'TASK_NOT_FOUND');
       }
 
       const meta: Record<string, unknown> = {

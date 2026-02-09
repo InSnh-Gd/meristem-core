@@ -3,9 +3,12 @@ import bcrypt from 'bcrypt';
 import type { Db } from 'mongodb';
 import type { DbSession } from '../db/transactions';
 import { runInTransaction } from '../db/transactions';
-import { normalizePagination } from '../db/query-policy';
 import {
-  countUsers,
+  decodeCreatedAtCursor,
+  encodeCreatedAtCursor,
+  normalizeCursorPagination,
+} from '../db/query-policy';
+import {
   deleteUserById,
   findUserById as findUserByIdRepo,
   findUserByUsername,
@@ -15,6 +18,7 @@ import {
   updateUserById,
 } from '../db/repositories/users';
 import type { UserDocument } from '../db/collections';
+import { DomainError } from '../errors/domain-error';
 import { ensureRolesBelongToOrg, resolvePermissionsByRoleIds } from './role';
 
 const BCRYPT_SALT_ROUNDS = 12;
@@ -35,7 +39,12 @@ export type UserPublicView = {
 export type ListUsersOptions = {
   orgId?: string;
   limit: number;
-  offset: number;
+  cursor?: string;
+};
+
+export type CursorPageInfo = {
+  has_next: boolean;
+  next_cursor: string | null;
 };
 
 export type CreateUserInput = {
@@ -76,29 +85,44 @@ export const getUserByUsername = async (
 export const listUsers = async (
   db: Db,
   options: ListUsersOptions,
-): Promise<{ data: UserDocument[]; total: number }> => {
-  const pagination = normalizePagination(
+): Promise<{ data: UserDocument[]; page_info: CursorPageInfo }> => {
+  const pagination = normalizeCursorPagination(
     {
       limit: options.limit,
-      offset: options.offset,
+      cursor: options.cursor,
     },
     {
       defaultLimit: 100,
       maxLimit: 200,
     },
   );
+  const cursor = pagination.cursor
+    ? decodeCreatedAtCursor(pagination.cursor)
+    : null;
   const filter = options.orgId ? { org_id: options.orgId } : {};
-  const [total, data] = await Promise.all([
-    countUsers(db, filter),
-    listUsersRepo(db, {
-      filter,
-      limit: pagination.limit,
-      offset: pagination.offset,
-      session: null,
-    }),
-  ]);
+  const rows = await listUsersRepo(db, {
+    filter,
+    limit: pagination.limit,
+    cursor,
+    session: null,
+  });
+  const hasNext = rows.length > pagination.limit;
+  const data = hasNext ? rows.slice(0, pagination.limit) : rows;
+  const last = data.at(-1);
 
-  return { data, total };
+  return {
+    data,
+    page_info: {
+      has_next: hasNext,
+      next_cursor:
+        hasNext && last
+          ? encodeCreatedAtCursor({
+              createdAt: last.created_at,
+              tieBreaker: last.user_id,
+            })
+          : null,
+    },
+  };
 };
 
 const computeUserPermissions = async (
@@ -123,7 +147,7 @@ export const createUser = async (
 ): Promise<UserDocument> => {
   const existing = await findUserByUsername(db, input.username, session);
   if (existing) {
-    throw new Error('USER_ALREADY_EXISTS');
+    throw new DomainError('USER_ALREADY_EXISTS');
   }
 
   const roleIds = uniqueStrings(input.role_ids);
@@ -134,7 +158,7 @@ export const createUser = async (
     session,
   );
   if (!rolesOk) {
-    throw new Error('ROLE_ORG_MISMATCH');
+    throw new DomainError('ROLE_ORG_MISMATCH');
   }
 
   const now = new Date();
@@ -179,7 +203,7 @@ export const updateUser = async (
       userId,
     );
     if (duplicated) {
-      throw new Error('USER_ALREADY_EXISTS');
+      throw new DomainError('USER_ALREADY_EXISTS');
     }
   }
 
@@ -191,7 +215,7 @@ export const updateUser = async (
     current.role_ids,
   );
   if (!rolesOk) {
-    throw new Error('ROLE_ORG_MISMATCH');
+    throw new DomainError('ROLE_ORG_MISMATCH');
   }
 
   const permissions = await computeUserPermissions(
@@ -264,7 +288,7 @@ export const assignRoleToUser = async (
       session,
     );
     if (!rolesOk) {
-      throw new Error('ROLE_ORG_MISMATCH');
+      throw new DomainError('ROLE_ORG_MISMATCH');
     }
 
     const permissions = await computeUserPermissions(

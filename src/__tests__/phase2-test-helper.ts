@@ -94,28 +94,111 @@ const unsetValueByPath = (doc: Record<string, unknown>, path: string): void => {
   delete current[segments[segments.length - 1]];
 };
 
+const toComparableValue = (value: unknown): unknown => {
+  if (value instanceof Date) {
+    return value.getTime();
+  }
+  return value;
+};
+
+const compareComparableValues = (
+  left: unknown,
+  right: unknown,
+): number | null => {
+  const normalizedLeft = toComparableValue(left);
+  const normalizedRight = toComparableValue(right);
+
+  if (typeof normalizedLeft === 'number' && typeof normalizedRight === 'number') {
+    return normalizedLeft - normalizedRight;
+  }
+  if (typeof normalizedLeft === 'string' && typeof normalizedRight === 'string') {
+    return normalizedLeft.localeCompare(normalizedRight);
+  }
+  return null;
+};
+
+const matchOperatorFilter = (
+  actual: unknown,
+  expectedRecord: Record<string, unknown>,
+): boolean => {
+  if ('$in' in expectedRecord && Array.isArray(expectedRecord.$in)) {
+    return (expectedRecord.$in as unknown[]).some(
+      (candidate) => toComparableValue(candidate) === toComparableValue(actual),
+    );
+  }
+
+  if ('$ne' in expectedRecord) {
+    return toComparableValue(actual) !== toComparableValue(expectedRecord.$ne);
+  }
+
+  if ('$gt' in expectedRecord) {
+    const compareResult = compareComparableValues(actual, expectedRecord.$gt);
+    if (compareResult === null) {
+      return false;
+    }
+    return compareResult > 0;
+  }
+
+  if ('$gte' in expectedRecord) {
+    const compareResult = compareComparableValues(actual, expectedRecord.$gte);
+    if (compareResult === null) {
+      return false;
+    }
+    return compareResult >= 0;
+  }
+
+  if ('$lt' in expectedRecord) {
+    const compareResult = compareComparableValues(actual, expectedRecord.$lt);
+    if (compareResult === null) {
+      return false;
+    }
+    return compareResult < 0;
+  }
+
+  if ('$lte' in expectedRecord) {
+    const compareResult = compareComparableValues(actual, expectedRecord.$lte);
+    if (compareResult === null) {
+      return false;
+    }
+    return compareResult <= 0;
+  }
+
+  return false;
+};
+
 const matchesFilter = (doc: Record<string, unknown>, filter?: Record<string, unknown>): boolean => {
   if (!filter) {
     return true;
   }
+
+  if ('$and' in filter && Array.isArray(filter.$and)) {
+    return (filter.$and as unknown[]).every((item) =>
+      matchesFilter(doc, item as Record<string, unknown>),
+    );
+  }
+
+  if ('$or' in filter && Array.isArray(filter.$or)) {
+    return (filter.$or as unknown[]).some((item) =>
+      matchesFilter(doc, item as Record<string, unknown>),
+    );
+  }
+
   return Object.entries(filter).every(([key, expected]) => {
     const actual = getValueByPath(doc, key);
     if (expected && typeof expected === 'object' && !Array.isArray(expected)) {
       const expectedRecord = asRecord(expected);
-      if ('$in' in expectedRecord && Array.isArray(expectedRecord.$in)) {
-        return (expectedRecord.$in as unknown[]).includes(actual);
-      }
-      if ('$ne' in expectedRecord) {
-        return actual !== expectedRecord.$ne;
-      }
-      if ('$gte' in expectedRecord && typeof actual === 'number') {
-        return actual >= (expectedRecord.$gte as number);
-      }
-      if ('$lte' in expectedRecord && typeof actual === 'number') {
-        return actual <= (expectedRecord.$lte as number);
+      if (
+        '$in' in expectedRecord ||
+        '$ne' in expectedRecord ||
+        '$gt' in expectedRecord ||
+        '$gte' in expectedRecord ||
+        '$lt' in expectedRecord ||
+        '$lte' in expectedRecord
+      ) {
+        return matchOperatorFilter(actual, expectedRecord);
       }
     }
-    return actual === expected;
+    return toComparableValue(actual) === toComparableValue(expected);
   });
 };
 

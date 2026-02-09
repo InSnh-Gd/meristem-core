@@ -6,13 +6,18 @@ import type {
 } from 'mongodb';
 import { USERS_COLLECTION, type UserDocument } from '../collections';
 import type { DbSession } from '../transactions';
+import type { CreatedAtCursor } from '../query-policy';
 import { resolveQueryMaxTimeMs } from '../query-policy';
-import { toSessionOption } from './shared';
+import {
+  applyCreatedAtCursorFilter,
+  executeRepositoryOperation,
+  toSessionOption,
+} from './shared';
 
 type UserListInput = {
   filter: Filter<UserDocument>;
   limit: number;
-  offset: number;
+  cursor: CreatedAtCursor | null;
   session: DbSession;
 };
 
@@ -24,9 +29,13 @@ export const findUserById = async (
   userId: string,
   session: DbSession = null,
 ): Promise<UserDocument | null> =>
-  usersCollection(db).findOne(
-    { user_id: userId },
-    toSessionOption(session),
+  executeRepositoryOperation(
+    USERS_COLLECTION,
+    'find_user_by_id',
+    () => usersCollection(db).findOne(
+      { user_id: userId },
+      toSessionOption(session),
+    ),
   );
 
 export const findUserByUsername = async (
@@ -34,9 +43,13 @@ export const findUserByUsername = async (
   username: string,
   session: DbSession = null,
 ): Promise<UserDocument | null> =>
-  usersCollection(db).findOne(
-    { username },
-    toSessionOption(session),
+  executeRepositoryOperation(
+    USERS_COLLECTION,
+    'find_user_by_username',
+    () => usersCollection(db).findOne(
+      { username },
+      toSessionOption(session),
+    ),
   );
 
 export const findUserByUsernameExcludingId = async (
@@ -45,12 +58,16 @@ export const findUserByUsernameExcludingId = async (
   userId: string,
   session: DbSession = null,
 ): Promise<UserDocument | null> =>
-  usersCollection(db).findOne(
-    {
-      username,
-      user_id: { $ne: userId },
-    },
-    toSessionOption(session),
+  executeRepositoryOperation(
+    USERS_COLLECTION,
+    'find_user_by_username_excluding_id',
+    () => usersCollection(db).findOne(
+      {
+        username,
+        user_id: { $ne: userId },
+      },
+      toSessionOption(session),
+    ),
   );
 
 export const countUsers = async (
@@ -58,29 +75,47 @@ export const countUsers = async (
   filter: Filter<UserDocument>,
   session: DbSession = null,
 ): Promise<number> =>
-  usersCollection(db).countDocuments(filter, {
-    ...toSessionOption(session),
-    maxTimeMS: QUERY_MAX_TIME_MS,
-  });
+  executeRepositoryOperation(
+    USERS_COLLECTION,
+    'count_users',
+    () => usersCollection(db).countDocuments(filter, {
+      ...toSessionOption(session),
+      maxTimeMS: QUERY_MAX_TIME_MS,
+    }),
+  );
 
 export const listUsers = async (
   db: Db,
   input: UserListInput,
 ): Promise<UserDocument[]> =>
-  usersCollection(db)
-    .find(input.filter, toSessionOption(input.session))
-    .sort({ created_at: 1 })
-    .skip(input.offset)
-    .limit(input.limit)
-    .maxTimeMS(QUERY_MAX_TIME_MS)
-    .toArray();
+  executeRepositoryOperation(
+    USERS_COLLECTION,
+    'list_users',
+    () => usersCollection(db)
+      .find(
+        applyCreatedAtCursorFilter(
+          input.filter,
+          input.cursor,
+          'user_id',
+        ),
+        toSessionOption(input.session),
+      )
+      .sort({ created_at: 1, user_id: 1 })
+      .limit(input.limit + 1)
+      .maxTimeMS(QUERY_MAX_TIME_MS)
+      .toArray(),
+  );
 
 export const insertUser = async (
   db: Db,
   user: UserDocument,
   session: DbSession = null,
 ): Promise<void> => {
-  await usersCollection(db).insertOne(user, toSessionOption(session));
+  await executeRepositoryOperation(
+    USERS_COLLECTION,
+    'insert_user',
+    () => usersCollection(db).insertOne(user, toSessionOption(session)),
+  );
 };
 
 export const updateUserById = async (
@@ -93,10 +128,14 @@ export const updateUserById = async (
     returnDocument: 'after',
     ...toSessionOption(session),
   };
-  return usersCollection(db).findOneAndUpdate(
-    { user_id: userId },
-    update,
-    options,
+  return executeRepositoryOperation(
+    USERS_COLLECTION,
+    'update_user_by_id',
+    () => usersCollection(db).findOneAndUpdate(
+      { user_id: userId },
+      update,
+      options,
+    ),
   );
 };
 
@@ -105,9 +144,13 @@ export const deleteUserById = async (
   userId: string,
   session: DbSession = null,
 ): Promise<number> => {
-  const result = await usersCollection(db).deleteOne(
-    { user_id: userId },
-    toSessionOption(session),
+  const result = await executeRepositoryOperation(
+    USERS_COLLECTION,
+    'delete_user_by_id',
+    () => usersCollection(db).deleteOne(
+      { user_id: userId },
+      toSessionOption(session),
+    ),
   );
   return result.deletedCount;
 };

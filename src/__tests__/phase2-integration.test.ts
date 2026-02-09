@@ -114,7 +114,7 @@ const createTask = async (app: Elysia, auth: string, name: string): Promise<Resp
 
 const listTasks = async (app: Elysia, auth: string): Promise<Response> =>
   app.handle(
-    new Request('http://localhost/api/v1/tasks?limit=100&offset=0', {
+    new Request('http://localhost/api/v1/tasks?limit=100', {
       method: 'GET',
       headers: {
         authorization: auth,

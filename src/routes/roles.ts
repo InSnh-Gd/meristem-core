@@ -12,6 +12,7 @@ import {
   updateRole,
 } from '../services/role';
 import { ensureSuperadminAccess } from './route-auth';
+import { respondWithError } from './route-errors';
 
 const GenericErrorSchema = t.Object({
   success: t.Literal(false),
@@ -32,7 +33,10 @@ const RoleSchema = t.Object({
 const RoleListResponseSchema = t.Object({
   success: t.Literal(true),
   data: t.Array(RoleSchema),
-  total: t.Number(),
+  page_info: t.Object({
+    has_next: t.Boolean(),
+    next_cursor: t.Union([t.String(), t.Null()]),
+  }),
 });
 
 const RoleSingleResponseSchema = t.Object({
@@ -61,7 +65,7 @@ const RoleUpdateRequestSchema = t.Object({
 const RoleListQuerySchema = t.Object({
   org_id: t.Optional(t.String({ minLength: 1 })),
   limit: t.Optional(t.Numeric({ minimum: 1, maximum: 200 })),
-  offset: t.Optional(t.Numeric({ minimum: 0 })),
+  cursor: t.Optional(t.String({ minLength: 1 })),
 });
 
 const GenericSuccessSchema = t.Object({
@@ -97,21 +101,26 @@ export const rolesRoute = (app: Elysia, db: Db): Elysia => {
         return denied;
       }
 
-      const { data, total } = await listRoles(db, {
-        orgId: query.org_id,
-        limit: query.limit ?? 100,
-        offset: query.offset ?? 0,
-      });
-      return {
-        success: true,
-        data: data.map((role) => toRoleView(role)),
-        total,
-      };
+      try {
+        const { data, page_info } = await listRoles(db, {
+          orgId: query.org_id,
+          limit: query.limit ?? 100,
+          cursor: query.cursor,
+        });
+        return {
+          success: true,
+          data: data.map((role) => toRoleView(role)),
+          page_info,
+        };
+      } catch (error) {
+        return respondWithError(set, error);
+      }
     },
     {
       query: RoleListQuerySchema,
       response: {
         200: RoleListResponseSchema,
+        400: GenericErrorSchema,
         401: GenericErrorSchema,
         403: GenericErrorSchema,
         500: GenericErrorSchema,
@@ -174,18 +183,7 @@ export const rolesRoute = (app: Elysia, db: Db): Elysia => {
           role_id: role.role_id,
         };
       } catch (error) {
-        if (error instanceof Error && error.message === 'ROLE_NAME_CONFLICT') {
-          set.status = 409;
-          return {
-            success: false,
-            error: 'ROLE_NAME_CONFLICT',
-          };
-        }
-        set.status = 500;
-        return {
-          success: false,
-          error: 'INTERNAL_ERROR',
-        };
+        return respondWithError(set, error);
       }
     },
     {
@@ -228,25 +226,7 @@ export const rolesRoute = (app: Elysia, db: Db): Elysia => {
           data: toRoleView(role),
         };
       } catch (error) {
-        if (error instanceof Error && error.message === 'ROLE_BUILTIN_READONLY') {
-          set.status = 400;
-          return {
-            success: false,
-            error: 'ROLE_BUILTIN_READONLY',
-          };
-        }
-        if (error instanceof Error && error.message === 'ROLE_NAME_CONFLICT') {
-          set.status = 409;
-          return {
-            success: false,
-            error: 'ROLE_NAME_CONFLICT',
-          };
-        }
-        set.status = 500;
-        return {
-          success: false,
-          error: 'INTERNAL_ERROR',
-        };
+        return respondWithError(set, error);
       }
     },
     {
@@ -285,18 +265,7 @@ export const rolesRoute = (app: Elysia, db: Db): Elysia => {
           success: true,
         };
       } catch (error) {
-        if (error instanceof Error && error.message === 'ROLE_BUILTIN_READONLY') {
-          set.status = 400;
-          return {
-            success: false,
-            error: 'ROLE_BUILTIN_READONLY',
-          };
-        }
-        set.status = 500;
-        return {
-          success: false,
-          error: 'INTERNAL_ERROR',
-        };
+        return respondWithError(set, error);
       }
     },
     {

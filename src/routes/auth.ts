@@ -3,6 +3,7 @@ import { Db } from 'mongodb';
 import { extractTraceId, generateTraceId } from '../utils/trace-context';
 import { authenticateUser, generateJWT } from '../services/auth';
 import { logAuditEvent, type AuditEventInput, type AuditLog } from '../services/audit';
+import { respondWithCode } from './route-errors';
 
 const TOKEN_EXPIRATION_SECONDS = 24 * 60 * 60;
 
@@ -46,8 +47,6 @@ export const authRoute = (
       const user = await authenticateUser(db, username, password);
 
       if (!user) {
-        set.status = 401;
-
         const auditEvent: AuditEventInput = {
           ts: now,
           level: 'WARN',
@@ -68,8 +67,7 @@ export const authRoute = (
         }
 
         return {
-          success: false,
-          error: 'Invalid credentials',
+          ...respondWithCode(set, 'AUTH_INVALID_CREDENTIALS'),
         };
       }
 

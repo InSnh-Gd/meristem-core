@@ -6,13 +6,18 @@ import type {
 } from 'mongodb';
 import { TASKS_COLLECTION, type TaskDocument } from '../collections';
 import type { DbSession } from '../transactions';
+import type { CreatedAtCursor } from '../query-policy';
 import { resolveQueryMaxTimeMs } from '../query-policy';
-import { toSessionOption } from './shared';
+import {
+  applyCreatedAtCursorFilter,
+  executeRepositoryOperation,
+  toSessionOption,
+} from './shared';
 
 type TaskListInput = {
   filter: Filter<TaskDocument>;
   limit: number;
-  offset: number;
+  cursor: CreatedAtCursor | null;
   session: DbSession;
 };
 
@@ -24,29 +29,47 @@ export const countTasks = async (
   filter: Filter<TaskDocument>,
   session: DbSession = null,
 ): Promise<number> =>
-  tasksCollection(db).countDocuments(filter, {
-    ...toSessionOption(session),
-    maxTimeMS: QUERY_MAX_TIME_MS,
-  });
+  executeRepositoryOperation(
+    TASKS_COLLECTION,
+    'count_tasks',
+    () => tasksCollection(db).countDocuments(filter, {
+      ...toSessionOption(session),
+      maxTimeMS: QUERY_MAX_TIME_MS,
+    }),
+  );
 
 export const listTasks = async (
   db: Db,
   input: TaskListInput,
 ): Promise<TaskDocument[]> =>
-  tasksCollection(db)
-    .find(input.filter, toSessionOption(input.session))
-    .sort({ created_at: 1 })
-    .skip(input.offset)
-    .limit(input.limit)
-    .maxTimeMS(QUERY_MAX_TIME_MS)
-    .toArray();
+  executeRepositoryOperation(
+    TASKS_COLLECTION,
+    'list_tasks',
+    () => tasksCollection(db)
+      .find(
+        applyCreatedAtCursorFilter(
+          input.filter,
+          input.cursor,
+          'task_id',
+        ),
+        toSessionOption(input.session),
+      )
+      .sort({ created_at: 1, task_id: 1 })
+      .limit(input.limit + 1)
+      .maxTimeMS(QUERY_MAX_TIME_MS)
+      .toArray(),
+  );
 
 export const insertTask = async (
   db: Db,
   task: TaskDocument,
   session: DbSession = null,
 ): Promise<void> => {
-  await tasksCollection(db).insertOne(task, toSessionOption(session));
+  await executeRepositoryOperation(
+    TASKS_COLLECTION,
+    'insert_task',
+    () => tasksCollection(db).insertOne(task, toSessionOption(session)),
+  );
 };
 
 export const updateTaskById = async (
@@ -59,9 +82,13 @@ export const updateTaskById = async (
     returnDocument: 'after',
     ...toSessionOption(session),
   };
-  return tasksCollection(db).findOneAndUpdate(
-    { task_id: taskId },
-    update,
-    options,
+  return executeRepositoryOperation(
+    TASKS_COLLECTION,
+    'update_task_by_id',
+    () => tasksCollection(db).findOneAndUpdate(
+      { task_id: taskId },
+      update,
+      options,
+    ),
   );
 };

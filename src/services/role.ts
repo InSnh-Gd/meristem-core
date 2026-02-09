@@ -1,9 +1,12 @@
 import { randomUUID } from 'crypto';
 import type { Db } from 'mongodb';
 import type { DbSession } from '../db/transactions';
-import { normalizePagination } from '../db/query-policy';
 import {
-  countRoles,
+  decodeCreatedAtCursor,
+  encodeCreatedAtCursor,
+  normalizeCursorPagination,
+} from '../db/query-policy';
+import {
   deleteRoleById,
   findRoleById as findRoleByIdRepo,
   findRoleByOrgAndName,
@@ -14,6 +17,7 @@ import {
   updateRoleById,
 } from '../db/repositories/roles';
 import type { RoleDocument } from '../db/collections';
+import { DomainError } from '../errors/domain-error';
 
 const uniqueStrings = (values: string[]): string[] => Array.from(new Set(values));
 
@@ -27,7 +31,12 @@ const normalizePermissions = (permissions: string[]): string[] =>
 export type ListRolesOptions = {
   orgId?: string;
   limit: number;
-  offset: number;
+  cursor?: string;
+};
+
+type CursorPageInfo = {
+  has_next: boolean;
+  next_cursor: string | null;
 };
 
 export type CreateRoleInput = {
@@ -46,29 +55,44 @@ export type UpdateRoleInput = {
 export const listRoles = async (
   db: Db,
   options: ListRolesOptions,
-): Promise<{ data: RoleDocument[]; total: number }> => {
-  const pagination = normalizePagination(
+): Promise<{ data: RoleDocument[]; page_info: CursorPageInfo }> => {
+  const pagination = normalizeCursorPagination(
     {
       limit: options.limit,
-      offset: options.offset,
+      cursor: options.cursor,
     },
     {
       defaultLimit: 100,
       maxLimit: 200,
     },
   );
+  const cursor = pagination.cursor
+    ? decodeCreatedAtCursor(pagination.cursor)
+    : null;
   const filter = options.orgId ? { org_id: options.orgId } : {};
-  const [total, data] = await Promise.all([
-    countRoles(db, filter),
-    listRolesRepo(db, {
-      filter,
-      limit: pagination.limit,
-      offset: pagination.offset,
-      session: null,
-    }),
-  ]);
+  const rows = await listRolesRepo(db, {
+    filter,
+    limit: pagination.limit,
+    cursor,
+    session: null,
+  });
+  const hasNext = rows.length > pagination.limit;
+  const data = hasNext ? rows.slice(0, pagination.limit) : rows;
+  const last = data.at(-1);
 
-  return { data, total };
+  return {
+    data,
+    page_info: {
+      has_next: hasNext,
+      next_cursor:
+        hasNext && last
+          ? encodeCreatedAtCursor({
+              createdAt: last.created_at,
+              tieBreaker: last.role_id,
+            })
+          : null,
+    },
+  };
 };
 
 export const findRoleById = async (
@@ -82,7 +106,7 @@ export const createRole = async (
 ): Promise<RoleDocument> => {
   const duplicated = await findRoleByOrgAndName(db, input.org_id, input.name);
   if (duplicated) {
-    throw new Error('ROLE_NAME_CONFLICT');
+    throw new DomainError('ROLE_NAME_CONFLICT');
   }
 
   const now = new Date();
@@ -111,7 +135,7 @@ export const updateRole = async (
     return null;
   }
   if (current.is_builtin) {
-    throw new Error('ROLE_BUILTIN_READONLY');
+    throw new DomainError('ROLE_BUILTIN_READONLY');
   }
 
   if (typeof input.name === 'string' && input.name !== current.name) {
@@ -122,7 +146,7 @@ export const updateRole = async (
       roleId,
     );
     if (duplicated) {
-      throw new Error('ROLE_NAME_CONFLICT');
+      throw new DomainError('ROLE_NAME_CONFLICT');
     }
   }
 
@@ -152,7 +176,7 @@ export const deleteRole = async (
     return false;
   }
   if (current.is_builtin) {
-    throw new Error('ROLE_BUILTIN_READONLY');
+    throw new DomainError('ROLE_BUILTIN_READONLY');
   }
 
   const deletedCount = await deleteRoleById(db, roleId);

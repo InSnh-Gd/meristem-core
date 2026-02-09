@@ -9,6 +9,7 @@ import {
   markInvitationExpired,
 } from '../db/repositories/invitations';
 import { runInTransaction } from '../db/transactions';
+import { DomainError } from '../errors/domain-error';
 import { createUser } from './user';
 
 const DEFAULT_EXPIRES_IN_HOURS = 24;
@@ -69,10 +70,10 @@ export const acceptInvitation = async (
     );
 
     if (!invitation) {
-      throw new Error('INVITATION_NOT_FOUND');
+      throw new DomainError('INVITATION_NOT_FOUND');
     }
     if (invitation.status === 'accepted') {
-      throw new Error('INVITATION_ALREADY_ACCEPTED');
+      throw new DomainError('INVITATION_ALREADY_ACCEPTED');
     }
 
     const now = new Date();
@@ -83,7 +84,7 @@ export const acceptInvitation = async (
         now,
         session,
       );
-      throw new Error('INVITATION_EXPIRED');
+      throw new DomainError('INVITATION_EXPIRED');
     }
 
     const user = await createUser(
@@ -104,7 +105,7 @@ export const acceptInvitation = async (
       session,
     );
     if (modifiedCount === 0) {
-      throw new Error('INVITATION_ALREADY_ACCEPTED');
+      throw new DomainError('INVITATION_ALREADY_ACCEPTED');
     }
 
     return { user_id: user.user_id };

@@ -4,7 +4,7 @@ import {
   type InvitationDocument,
 } from '../collections';
 import type { DbSession } from '../transactions';
-import { toSessionOption } from './shared';
+import { executeRepositoryOperation, toSessionOption } from './shared';
 
 const invitationsCollection = (db: Db) =>
   db.collection<InvitationDocument>(INVITATIONS_COLLECTION);
@@ -14,9 +14,13 @@ export const insertInvitation = async (
   invitation: InvitationDocument,
   session: DbSession = null,
 ): Promise<void> => {
-  await invitationsCollection(db).insertOne(
-    invitation,
-    toSessionOption(session),
+  await executeRepositoryOperation(
+    INVITATIONS_COLLECTION,
+    'insert_invitation',
+    () => invitationsCollection(db).insertOne(
+      invitation,
+      toSessionOption(session),
+    ),
   );
 };
 
@@ -25,7 +29,11 @@ export const findInvitation = async (
   filter: Filter<InvitationDocument>,
   session: DbSession = null,
 ): Promise<InvitationDocument | null> =>
-  invitationsCollection(db).findOne(filter, toSessionOption(session));
+  executeRepositoryOperation(
+    INVITATIONS_COLLECTION,
+    'find_invitation',
+    () => invitationsCollection(db).findOne(filter, toSessionOption(session)),
+  );
 
 export const markInvitationExpired = async (
   db: Db,
@@ -33,18 +41,22 @@ export const markInvitationExpired = async (
   now: Date,
   session: DbSession = null,
 ): Promise<number> => {
-  const result = await invitationsCollection(db).updateOne(
-    {
-      invitation_id: invitationId,
-      status: 'pending',
-    },
-    {
-      $set: {
-        status: 'expired',
-        updated_at: now,
+  const result = await executeRepositoryOperation(
+    INVITATIONS_COLLECTION,
+    'mark_invitation_expired',
+    () => invitationsCollection(db).updateOne(
+      {
+        invitation_id: invitationId,
+        status: 'pending',
       },
-    },
-    toSessionOption(session),
+      {
+        $set: {
+          status: 'expired',
+          updated_at: now,
+        },
+      },
+      toSessionOption(session),
+    ),
   );
   return result.modifiedCount;
 };
@@ -55,19 +67,23 @@ export const markInvitationAccepted = async (
   now: Date,
   session: DbSession = null,
 ): Promise<number> => {
-  const result = await invitationsCollection(db).updateOne(
-    {
-      invitation_id: invitationId,
-      status: 'pending',
-    },
-    {
-      $set: {
-        status: 'accepted',
-        accepted_at: now,
-        updated_at: now,
+  const result = await executeRepositoryOperation(
+    INVITATIONS_COLLECTION,
+    'mark_invitation_accepted',
+    () => invitationsCollection(db).updateOne(
+      {
+        invitation_id: invitationId,
+        status: 'pending',
       },
-    },
-    toSessionOption(session),
+      {
+        $set: {
+          status: 'accepted',
+          accepted_at: now,
+          updated_at: now,
+        },
+      },
+      toSessionOption(session),
+    ),
   );
   return result.modifiedCount;
 };

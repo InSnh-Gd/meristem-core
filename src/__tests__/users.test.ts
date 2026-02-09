@@ -96,7 +96,7 @@ test('users API enforces superadmin and supports CRUD', async (): Promise<void> 
   expect(typeof createPayload.user_id).toBe('string');
 
   const listResp = await app.handle(
-    new Request('http://localhost/api/v1/users?limit=50&offset=0', {
+    new Request('http://localhost/api/v1/users?limit=50', {
       method: 'GET',
       headers: { authorization: superadminAuth },
     }),
@@ -141,7 +141,7 @@ test('users API enforces superadmin and supports CRUD', async (): Promise<void> 
   expect(deleteResp.status).toBe(200);
 
   const listAfterDeleteResp = await app.handle(
-    new Request('http://localhost/api/v1/users?limit=50&offset=0', {
+    new Request('http://localhost/api/v1/users?limit=50', {
       method: 'GET',
       headers: { authorization: superadminAuth },
     }),
