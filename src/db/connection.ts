@@ -41,12 +41,10 @@ export const resolveMongoConfig = (
   const uri =
     override.uri ??
     env.MERISTEM_DATABASE_MONGO_URI ??
-    env.MONGO_URI ??
     'mongodb://localhost:27017/meristem';
   const dbName =
     override.dbName ??
     env.MERISTEM_DATABASE_MONGO_DB_NAME ??
-    env.MONGO_DB_NAME ??
     inferDbNameFromUri(uri) ??
     'meristem';
   return { uri, dbName, options: override.options };

@@ -138,7 +138,6 @@ export function loadConfig(): CoreConfig {
         database: {
             mongo_uri:
                 process.env.MERISTEM_DATABASE_MONGO_URI ??
-                process.env.MONGO_URI ??
                 fileConfig.database?.mongo_uri ??
                 'mongodb://localhost:27017/meristem',
         },

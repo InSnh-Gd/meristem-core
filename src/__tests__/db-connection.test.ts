@@ -9,8 +9,7 @@ test('resolveMongoConfig prefers override uri and dbName', (): void => {
     },
     {
       MERISTEM_DATABASE_MONGO_URI: 'mongodb://env-host:27017/env-db',
-      MONGO_URI: 'mongodb://legacy-host:27017/legacy-db',
-      MONGO_DB_NAME: 'legacy-name',
+      MERISTEM_DATABASE_MONGO_DB_NAME: 'env-name',
     },
   );
 
@@ -18,17 +17,16 @@ test('resolveMongoConfig prefers override uri and dbName', (): void => {
   expect(config.dbName).toBe('override-name');
 });
 
-test('resolveMongoConfig prefers MERISTEM_DATABASE_MONGO_URI over MONGO_URI', (): void => {
+test('resolveMongoConfig ignores legacy MONGO_URI fallback', (): void => {
   const config = resolveMongoConfig(
     {},
     {
-      MERISTEM_DATABASE_MONGO_URI: 'mongodb://modern-host:27017/modern-db',
       MONGO_URI: 'mongodb://legacy-host:27017/legacy-db',
     },
   );
 
-  expect(config.uri).toBe('mongodb://modern-host:27017/modern-db');
-  expect(config.dbName).toBe('modern-db');
+  expect(config.uri).toBe('mongodb://localhost:27017/meristem');
+  expect(config.dbName).toBe('meristem');
 });
 
 test('resolveMongoConfig infers dbName from uri path when db env is missing', (): void => {
@@ -51,4 +49,16 @@ test('resolveMongoConfig falls back to default dbName when uri has no db path', 
   );
 
   expect(config.dbName).toBe('meristem');
+});
+
+test('resolveMongoConfig uses MERISTEM_DATABASE_MONGO_DB_NAME when provided', (): void => {
+  const config = resolveMongoConfig(
+    {},
+    {
+      MERISTEM_DATABASE_MONGO_URI: 'mongodb://localhost:27017/ignored-name',
+      MERISTEM_DATABASE_MONGO_DB_NAME: 'explicit-db',
+    },
+  );
+
+  expect(config.dbName).toBe('explicit-db');
 });

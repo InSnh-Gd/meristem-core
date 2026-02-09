@@ -20,13 +20,14 @@ afterEach((): void => {
   restoreEnv();
 });
 
-test('loadConfig falls back to MONGO_URI when MERISTEM_DATABASE_MONGO_URI is missing', (): void => {
+test('loadConfig ignores legacy MONGO_URI when MERISTEM_DATABASE_MONGO_URI is missing', (): void => {
   delete process.env.MERISTEM_DATABASE_MONGO_URI;
+  const baseline = loadConfig().database.mongo_uri;
   process.env.MONGO_URI = 'mongodb://legacy-host:27017/legacy-db';
 
   const config = loadConfig();
 
-  expect(config.database.mongo_uri).toBe('mongodb://legacy-host:27017/legacy-db');
+  expect(config.database.mongo_uri).toBe(baseline);
 });
 
 test('loadConfig keeps MERISTEM_DATABASE_MONGO_URI as top priority', (): void => {
