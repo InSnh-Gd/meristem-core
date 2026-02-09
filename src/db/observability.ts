@@ -18,7 +18,7 @@ type DbQueryMetricInput = {
 };
 
 type DbTransactionMetricInput = {
-  status: 'success' | 'retry' | 'failed';
+  status: 'success' | 'failed';
   durationMs: number;
 };
 

@@ -49,28 +49,6 @@ const HTTP_STATUS_BY_CODE: Readonly<Record<DomainErrorCode, number>> = {
   TRANSACTION_ABORTED: 409,
 };
 
-const LEGACY_CODE_BY_MESSAGE: Readonly<Record<string, DomainErrorCode>> = {
-  'bootstrap already completed': 'BOOTSTRAP_ALREADY_COMPLETED',
-  'Bootstrap already completed': 'BOOTSTRAP_ALREADY_COMPLETED',
-  BOOTSTRAP_ALREADY_COMPLETED: 'BOOTSTRAP_ALREADY_COMPLETED',
-  AUTH_INVALID_CREDENTIALS: 'AUTH_INVALID_CREDENTIALS',
-  'Invalid credentials': 'AUTH_INVALID_CREDENTIALS',
-  INVALID_BOOTSTRAP_TOKEN: 'INVALID_BOOTSTRAP_TOKEN',
-  'Invalid bootstrap token': 'INVALID_BOOTSTRAP_TOKEN',
-  USER_ALREADY_EXISTS: 'USER_ALREADY_EXISTS',
-  ROLE_ORG_MISMATCH: 'ROLE_ORG_MISMATCH',
-  ROLE_NAME_CONFLICT: 'ROLE_NAME_CONFLICT',
-  ROLE_BUILTIN_READONLY: 'ROLE_BUILTIN_READONLY',
-  INVITATION_NOT_FOUND: 'INVITATION_NOT_FOUND',
-  INVITATION_ALREADY_ACCEPTED: 'INVITATION_ALREADY_ACCEPTED',
-  INVITATION_EXPIRED: 'INVITATION_EXPIRED',
-  INVALID_CALL_DEPTH: 'INVALID_CALL_DEPTH',
-  TASK_CREATION_FAILED: 'TASK_CREATION_FAILED',
-  RESULT_SUBMISSION_FAILED: 'RESULT_SUBMISSION_FAILED',
-  TRANSACTION_ABORTED: 'TRANSACTION_ABORTED',
-  'Task not found': 'TASK_NOT_FOUND',
-};
-
 const describeUnknownError = (error: unknown): string => {
   if (error instanceof Error) {
     return error.message;
@@ -103,27 +81,12 @@ export class DomainError extends Error {
 export const isDomainError = (error: unknown): error is DomainError =>
   error instanceof DomainError;
 
-export const resolveLegacyDomainErrorCode = (
-  error: unknown,
-): DomainErrorCode | null => {
-  if (!(error instanceof Error)) {
-    return null;
-  }
-  const mapped = LEGACY_CODE_BY_MESSAGE[error.message];
-  return mapped ?? null;
-};
-
 export const toDomainError = (
   error: unknown,
   fallbackCode: DomainErrorCode = 'INTERNAL_ERROR',
 ): DomainError => {
   if (isDomainError(error)) {
     return error;
-  }
-
-  const legacyCode = resolveLegacyDomainErrorCode(error);
-  if (legacyCode) {
-    return new DomainError(legacyCode, { cause: error });
   }
 
   return new DomainError(fallbackCode, {
