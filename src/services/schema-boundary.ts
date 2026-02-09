@@ -13,6 +13,7 @@ export const HeartbeatMessageSchema = Schema.Struct({
 });
 
 export type HeartbeatMessage = Schema.Schema.Type<typeof HeartbeatMessageSchema>;
+const JSON_DECODER = new TextDecoder();
 
 const PulseSnapshotSchema = Schema.Struct({
   node_id: Schema.String,
@@ -115,7 +116,7 @@ export const decodeJsonBoundary = (
   scope: string,
 ): Effect.Effect<unknown, DomainError> =>
   Effect.try({
-    try: () => JSON.parse(new TextDecoder().decode(bytes)) as unknown,
+    try: () => JSON.parse(JSON_DECODER.decode(bytes)) as unknown,
     catch: (error) =>
       new DomainError('INTERNAL_ERROR', {
         cause: error,
@@ -147,4 +148,3 @@ export const runBoundarySync = <A>(
     }),
   };
 };
-

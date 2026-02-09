@@ -110,7 +110,10 @@ export const startApp = async (config: AppConfig = {}): Promise<Elysia> => {
   tasksRoute(app, db);
   resultsRoute(app, db);
   metricsRoute(app);
-  wsRoute(app, { wsPath: coreConfig.server.ws_path });
+  wsRoute(app, {
+    wsPath: coreConfig.server.ws_path,
+    enableEdenSubscribe: flags.ENABLE_EDEN_WS,
+  });
 
   app.listen({ port });
   const shutdown = createShutdownLifecycle(initLogger);

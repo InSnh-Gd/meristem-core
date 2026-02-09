@@ -1,3 +1,5 @@
+import { runWasmPocBenchmarks, type WasmPocBenchmarkResult } from '../runtime/wasm-poc';
+
 type BenchmarkSample = {
   name: string;
   iterations: number;
@@ -13,6 +15,7 @@ type BenchmarkReport = {
     arch: string;
   };
   samples: readonly BenchmarkSample[];
+  wasmPoc: WasmPocBenchmarkResult;
 };
 
 const runBenchmark = (
@@ -46,6 +49,9 @@ const runBaseline = (): BenchmarkReport => {
     tags: ['bench', 'runtime'],
   };
   const byteSource = new Uint8Array(4096);
+  const wasmPoc = runWasmPocBenchmarks({
+    iterations: 600,
+  });
 
   const samples: BenchmarkSample[] = [
     runBenchmark('json-stringify-parse', 20_000, () => {
@@ -78,9 +84,9 @@ const runBaseline = (): BenchmarkReport => {
       arch: process.arch,
     },
     samples,
+    wasmPoc,
   };
 };
 
 const report = runBaseline();
 console.log(JSON.stringify(report, null, 2));
-

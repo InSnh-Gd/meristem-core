@@ -1,4 +1,5 @@
 import type { Elysia } from 'elysia';
+import type { WsErrorCode, WsServerMessage as SharedWsServerMessage, WsTopic } from '@insnh-gd/meristem-shared';
 import { loadConfig } from '../config';
 import { verifyJwtToken } from '../middleware/auth';
 import { createTraceContext, generateTraceId } from '../utils/trace-context';
@@ -18,31 +19,14 @@ export type WsClientMessage =
       type: 'PING';
     };
 
-export type WsServerMessage =
-  | {
-      type: 'ACK';
-      action: 'CONNECTED' | 'SUBSCRIBE' | 'UNSUBSCRIBE' | 'PONG';
-      topic?: string;
-    }
-  | {
-      type: 'ERROR';
-      code: 'AUTH_REQUIRED' | 'AUTH_INVALID' | 'NOT_CONNECTED' | 'INVALID_MESSAGE' | 'INVALID_TOPIC';
-      error: string;
-      message: string;
-    }
-  | {
-      type: 'PUSH';
-      topic: string;
-      payload: unknown;
-      trace_id: string;
-    };
+export type WsServerMessage = SharedWsServerMessage;
 
 export type WsConnection = {
   id?: string | number;
   data?: {
     query?: Record<string, unknown>;
   };
-  send: (message: string) => unknown;
+  send: (message: string | Uint8Array) => unknown;
   close?: () => unknown;
 };
 
@@ -63,6 +47,7 @@ export type WsRouteOptions = {
   wsPath?: string;
   manager?: WsManager;
   validateToken?: (token: string) => Promise<WsAuthContext | null>;
+  enableEdenSubscribe?: boolean;
 };
 
 export type WsAuthContext = {
@@ -77,6 +62,7 @@ type WsRegistrableApp = {
 
 const TOPIC_PATTERN_NODE_STATUS = /^node\.[^.]+\.status$/;
 const TOPIC_PATTERN_TASK_STATUS = /^task\.[^.]+\.status$/;
+const MESSAGE_DECODER = new TextDecoder();
 
 const isStringArray = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((item) => typeof item === 'string');
@@ -117,7 +103,7 @@ const normalizeRawMessage = (value: unknown): string | null => {
   }
 
   if (value instanceof Uint8Array) {
-    return new TextDecoder().decode(value);
+    return MESSAGE_DECODER.decode(value);
   }
 
   return null;
@@ -175,6 +161,20 @@ const getTokenFromConnection = (ws: WsConnection): string | undefined => {
   return undefined;
 };
 
+const getTopicFromConnection = (ws: WsConnection): string | undefined => {
+  const topic = ws.data?.query?.topic;
+
+  if (typeof topic === 'string' && topic.trim().length > 0) {
+    return topic;
+  }
+
+  if (Array.isArray(topic) && topic.length > 0 && typeof topic[0] === 'string' && topic[0].trim().length > 0) {
+    return topic[0];
+  }
+
+  return undefined;
+};
+
 const sendServerMessage = (ws: WsConnection, message: WsServerMessage): void => {
   ws.send(JSON.stringify(message));
 };
@@ -199,7 +199,7 @@ const sendAck = (
 
 const sendError = (
   ws: WsConnection,
-  code: 'AUTH_REQUIRED' | 'AUTH_INVALID' | 'NOT_CONNECTED' | 'INVALID_MESSAGE' | 'INVALID_TOPIC',
+  code: WsErrorCode,
   message: string,
 ): void => {
   sendServerMessage(ws, {
@@ -380,7 +380,7 @@ export const createWebSocketManager = (
 
       const encoded = JSON.stringify({
         type: 'PUSH',
-        topic,
+        topic: topic as WsTopic,
         payload,
         trace_id: authContext.traceId,
       } satisfies WsServerMessage);
@@ -410,14 +410,29 @@ export const broadcastWsPush = (topic: string, payload: unknown): number => {
   return activeWsManager.broadcast(topic, payload);
 };
 
-export const createWsHandlers = (manager: WsManager): WsHandlers => {
+export const createWsHandlers = (
+  manager: WsManager,
+  options: {
+    enableEdenSubscribe?: boolean;
+  } = {},
+): WsHandlers => {
+  const enableEdenSubscribe = options.enableEdenSubscribe ?? false;
   return {
     open: (ws) => {
       const token = getTokenFromConnection(ws);
       void manager.connect(ws, token).then((accepted) => {
         if (!accepted) {
           ws.close?.();
+          return;
         }
+        if (!enableEdenSubscribe) {
+          return;
+        }
+        const topic = getTopicFromConnection(ws);
+        if (!topic) {
+          return;
+        }
+        manager.handleMessage(ws, JSON.stringify({ type: 'SUBSCRIBE', topic }));
       });
     },
     message: (ws, rawMessage) => {
@@ -434,7 +449,12 @@ export const wsRoute = (app: Elysia, options: WsRouteOptions = {}): Elysia => {
   const wsPath = options.wsPath ?? loadConfig().server.ws_path;
   const registrable = app as unknown as WsRegistrableApp;
 
-  registrable.ws(wsPath, createWsHandlers(manager));
+  registrable.ws(
+    wsPath,
+    createWsHandlers(manager, {
+      enableEdenSubscribe: options.enableEdenSubscribe,
+    }),
+  );
   activeWsManager = manager;
 
   return app;
