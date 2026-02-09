@@ -136,7 +136,11 @@ export function loadConfig(): CoreConfig {
             ws_path: process.env.MERISTEM_SERVER_WS_PATH ?? fileConfig.server?.ws_path ?? '/ws',
         },
         database: {
-            mongo_uri: process.env.MERISTEM_DATABASE_MONGO_URI ?? fileConfig.database?.mongo_uri ?? 'mongodb://localhost:27017/meristem',
+            mongo_uri:
+                process.env.MERISTEM_DATABASE_MONGO_URI ??
+                process.env.MONGO_URI ??
+                fileConfig.database?.mongo_uri ??
+                'mongodb://localhost:27017/meristem',
         },
         security: {
             jwt_algorithm: fileSecurity?.jwt_algorithm ?? 'HS256',
