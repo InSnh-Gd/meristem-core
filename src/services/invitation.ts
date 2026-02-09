@@ -1,7 +1,14 @@
 import { randomUUID } from 'crypto';
 import type { Db } from 'mongodb';
 
-import { INVITATIONS_COLLECTION, type InvitationDocument } from '../db/collections';
+import type { InvitationDocument } from '../db/collections';
+import {
+  findInvitation,
+  insertInvitation,
+  markInvitationAccepted,
+  markInvitationExpired,
+} from '../db/repositories/invitations';
+import { runInTransaction } from '../db/transactions';
 import { createUser } from './user';
 
 const DEFAULT_EXPIRES_IN_HOURS = 24;
@@ -25,7 +32,6 @@ export const createInvitation = async (
   db: Db,
   input: CreateInvitationInput,
 ): Promise<InvitationDocument> => {
-  const collection = db.collection<InvitationDocument>(INVITATIONS_COLLECTION);
   const now = new Date();
   const expiresInHours =
     typeof input.expires_in_hours === 'number' && input.expires_in_hours > 0
@@ -45,57 +51,61 @@ export const createInvitation = async (
     updated_at: now,
   };
 
-  await collection.insertOne(invitation);
+  await insertInvitation(db, invitation);
   return invitation;
 };
 
 export const acceptInvitation = async (
   db: Db,
   input: AcceptInvitationInput,
-): Promise<{ user_id: string }> => {
-  const collection = db.collection<InvitationDocument>(INVITATIONS_COLLECTION);
-  const invitation = await collection.findOne({
-    invitation_token: input.invitation_token,
-  });
-
-  if (!invitation) {
-    throw new Error('INVITATION_NOT_FOUND');
-  }
-  if (invitation.status === 'accepted') {
-    throw new Error('INVITATION_ALREADY_ACCEPTED');
-  }
-
-  const now = new Date();
-  if (invitation.expires_at.getTime() <= now.getTime()) {
-    await collection.updateOne(
-      { invitation_id: invitation.invitation_id },
+): Promise<{ user_id: string }> =>
+  runInTransaction(db, async (session) => {
+    const invitation = await findInvitation(
+      db,
       {
-        $set: {
-          status: 'expired',
-          updated_at: now,
-        },
+        invitation_token: input.invitation_token,
       },
+      session,
     );
-    throw new Error('INVITATION_EXPIRED');
-  }
 
-  const user = await createUser(db, {
-    username: invitation.username,
-    password: input.password,
-    org_id: invitation.org_id,
-    role_ids: invitation.role_ids,
-  });
+    if (!invitation) {
+      throw new Error('INVITATION_NOT_FOUND');
+    }
+    if (invitation.status === 'accepted') {
+      throw new Error('INVITATION_ALREADY_ACCEPTED');
+    }
 
-  await collection.updateOne(
-    { invitation_id: invitation.invitation_id },
-    {
-      $set: {
-        status: 'accepted',
-        accepted_at: now,
-        updated_at: now,
+    const now = new Date();
+    if (invitation.expires_at.getTime() <= now.getTime()) {
+      await markInvitationExpired(
+        db,
+        invitation.invitation_id,
+        now,
+        session,
+      );
+      throw new Error('INVITATION_EXPIRED');
+    }
+
+    const user = await createUser(
+      db,
+      {
+        username: invitation.username,
+        password: input.password,
+        org_id: invitation.org_id,
+        role_ids: invitation.role_ids,
       },
-    },
-  );
+      session,
+    );
 
-  return { user_id: user.user_id };
-};
+    const modifiedCount = await markInvitationAccepted(
+      db,
+      invitation.invitation_id,
+      now,
+      session,
+    );
+    if (modifiedCount === 0) {
+      throw new Error('INVITATION_ALREADY_ACCEPTED');
+    }
+
+    return { user_id: user.user_id };
+  });

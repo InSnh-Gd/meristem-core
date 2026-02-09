@@ -104,6 +104,36 @@ const createCollectionIndexes = async (
   await collection.createIndexes([...specs]);
 };
 
+type IndexListCapableCollection = Collection & {
+  listIndexes?: () => {
+    toArray: () => Promise<Array<{ name?: string }>>;
+  };
+};
+
+const extractExpectedIndexNames = (specs: readonly IndexSpec[]): string[] =>
+  specs
+    .map((spec) => (typeof spec.name === 'string' ? spec.name : undefined))
+    .filter((name): name is string => typeof name === 'string' && name.length > 0);
+
+const resolveMissingIndexNames = async (
+  collection: Collection,
+  expectedNames: readonly string[],
+): Promise<string[]> => {
+  const listIndexes = (collection as IndexListCapableCollection).listIndexes;
+  if (typeof listIndexes !== 'function') {
+    return [];
+  }
+
+  const existingIndexes = await listIndexes().toArray();
+  const existingNames = new Set(
+    existingIndexes
+      .map((item) => item.name)
+      .filter((name): name is string => typeof name === 'string' && name.length > 0),
+  );
+
+  return expectedNames.filter((name) => !existingNames.has(name));
+};
+
 export const ensureDbIndexes = async (
   db: Db,
   traceContext: TraceContext,
@@ -112,7 +142,17 @@ export const ensureDbIndexes = async (
   const startedAt = Date.now();
 
   for (const plan of INDEX_PLANS) {
-    await createCollectionIndexes(db.collection(plan.collection), plan.specs);
+    const collection = db.collection(plan.collection);
+    await createCollectionIndexes(collection, plan.specs);
+
+    const expectedNames = extractExpectedIndexNames(plan.specs);
+    const missingIndexNames = await resolveMissingIndexNames(collection, expectedNames);
+    if (missingIndexNames.length > 0) {
+      logger.warn('[DB] 索引校验缺失', {
+        collection: plan.collection,
+        missing_indexes: missingIndexNames,
+      });
+    }
   }
 
   const elapsedMs = Date.now() - startedAt;

@@ -54,6 +54,7 @@ export const resolveMongoConfig = (
 
 let client: MongoClient | null = null;
 let db: Db | null = null;
+let connectingPromise: Promise<Db> | null = null;
 
 /**
  * 使用纯函数获取或建立 Mongo 客户端，确保多次调用不会重复连接
@@ -65,13 +66,24 @@ export const connectDb = async (
   if (db) {
     return db;
   }
+  if (connectingPromise) {
+    return connectingPromise;
+  }
   const config = resolveMongoConfig(override);
-  client = new MongoClient(config.uri, config.options);
-  await client.connect();
-  db = client.db(config.dbName);
-  const logger = createLogger(traceContext);
-  logger.info(`[DB] 连接到 ${config.dbName}`);
-  return db;
+  connectingPromise = (async () => {
+    client = new MongoClient(config.uri, config.options);
+    await client.connect();
+    db = client.db(config.dbName);
+    const logger = createLogger(traceContext);
+    logger.info(`[DB] 连接到 ${config.dbName}`);
+    return db;
+  })();
+
+  try {
+    return await connectingPromise;
+  } finally {
+    connectingPromise = null;
+  }
 };
 
 /**
@@ -91,9 +103,15 @@ export const closeDb = async (traceContext: TraceContext): Promise<void> => {
   if (!client) {
     return;
   }
+  await connectingPromise;
   await client.close();
   client = null;
   db = null;
+  connectingPromise = null;
   const logger = createLogger(traceContext);
   logger.info('[DB] MongoDB 连接已关闭');
 };
+
+export const getMongoClient = (): MongoClient | null => client;
+
+export const isDbConnected = (): boolean => db !== null && client !== null;

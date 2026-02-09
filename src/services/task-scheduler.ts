@@ -1,10 +1,15 @@
-import { Db } from 'mongodb';
+import type { Db, Filter } from 'mongodb';
 import {
-  TASKS_COLLECTION,
   TaskAvailability,
   TaskDocument,
   TaskStatusType,
 } from '../db/collections';
+import {
+  countTasks,
+  insertTask,
+  listTasks,
+  updateTaskById,
+} from '../db/repositories/tasks';
 
 /**
  * 任务调度服务
@@ -12,6 +17,12 @@ import {
  * 负责将任务记录写入 Mongo，并在需要时将任务分配到指定节点。
  */
 export type CreateTaskInput = Omit<TaskDocument, 'created_at'>;
+
+export type ListTasksInput = {
+  filter: Filter<TaskDocument>;
+  limit: number;
+  offset: number;
+};
 
 const DEFAULT_ASSIGNMENT_STATUS: TaskStatusType = 'RUNNING';
 const DEFAULT_ASSIGNMENT_AVAILABILITY: TaskAvailability = 'READY';
@@ -24,16 +35,35 @@ const DEFAULT_ASSIGNMENT_AVAILABILITY: TaskAvailability = 'READY';
  */
 export const createTask = async (
   db: Db,
-  taskData: CreateTaskInput
+  taskData: CreateTaskInput,
 ): Promise<TaskDocument> => {
-  const collection = db.collection<TaskDocument>(TASKS_COLLECTION);
   const document: TaskDocument = {
     ...taskData,
     created_at: new Date(),
   };
 
-  await collection.insertOne(document);
+  await insertTask(db, document);
   return document;
+};
+
+export const listTaskDocuments = async (
+  db: Db,
+  input: ListTasksInput,
+): Promise<{ data: TaskDocument[]; total: number }> => {
+  const [total, data] = await Promise.all([
+    countTasks(db, input.filter),
+    listTasks(db, {
+      filter: input.filter,
+      limit: input.limit,
+      offset: input.offset,
+      session: null,
+    }),
+  ]);
+
+  return {
+    data,
+    total,
+  };
 };
 
 /**
@@ -46,21 +76,12 @@ export const createTask = async (
 export const assignTask = async (
   db: Db,
   taskId: string,
-  nodeId: string
-): Promise<TaskDocument | null> => {
-  const collection = db.collection<TaskDocument>(TASKS_COLLECTION);
-
-  const updated = await collection.findOneAndUpdate(
-    { task_id: taskId },
-    {
-      $set: {
-        target_node_id: nodeId,
-        'status.type': DEFAULT_ASSIGNMENT_STATUS,
-        availability: DEFAULT_ASSIGNMENT_AVAILABILITY,
-      },
+  nodeId: string,
+): Promise<TaskDocument | null> =>
+  updateTaskById(db, taskId, {
+    $set: {
+      target_node_id: nodeId,
+      'status.type': DEFAULT_ASSIGNMENT_STATUS,
+      availability: DEFAULT_ASSIGNMENT_AVAILABILITY,
     },
-    { returnDocument: 'after' }
-  );
-
-  return updated;
-};
+  });

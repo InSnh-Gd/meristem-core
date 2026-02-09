@@ -1,7 +1,7 @@
 import { Elysia, t } from 'elysia';
 import type { Db } from 'mongodb';
 
-import { requireAuth, type AuthStore } from '../middleware/auth';
+import { requireAuth } from '../middleware/auth';
 import { DEFAULT_ORG_ID } from '../services/bootstrap';
 import {
   createRole,
@@ -11,6 +11,7 @@ import {
   type UpdateRoleInput,
   updateRole,
 } from '../services/role';
+import { ensureSuperadminAccess } from './route-auth';
 
 const GenericErrorSchema = t.Object({
   success: t.Literal(false),
@@ -87,32 +88,11 @@ const toRoleView = (role: {
   updated_at: role.updated_at.toISOString(),
 });
 
-const ensureSuperadmin = (
-  context: { set: { status?: unknown }; store: Record<string, unknown> },
-): { success: false; error: string } | null => {
-  const store = context.store as unknown as AuthStore;
-  if (!store.user) {
-    context.set.status = 401;
-    return {
-      success: false,
-      error: 'UNAUTHORIZED',
-    };
-  }
-  if (!store.user.permissions.includes('*')) {
-    context.set.status = 403;
-    return {
-      success: false,
-      error: 'ACCESS_DENIED',
-    };
-  }
-  return null;
-};
-
 export const rolesRoute = (app: Elysia, db: Db): Elysia => {
   app.get(
     '/api/v1/roles',
     async ({ query, set, store }) => {
-      const denied = ensureSuperadmin({ set, store });
+      const denied = ensureSuperadminAccess(store, set);
       if (denied) {
         return denied;
       }
@@ -143,7 +123,7 @@ export const rolesRoute = (app: Elysia, db: Db): Elysia => {
   app.get(
     '/api/v1/roles/:id',
     async ({ params, set, store }) => {
-      const denied = ensureSuperadmin({ set, store });
+      const denied = ensureSuperadminAccess(store, set);
       if (denied) {
         return denied;
       }
@@ -176,7 +156,7 @@ export const rolesRoute = (app: Elysia, db: Db): Elysia => {
   app.post(
     '/api/v1/roles',
     async ({ body, set, store }) => {
-      const denied = ensureSuperadmin({ set, store });
+      const denied = ensureSuperadminAccess(store, set);
       if (denied) {
         return denied;
       }
@@ -224,7 +204,7 @@ export const rolesRoute = (app: Elysia, db: Db): Elysia => {
   app.patch(
     '/api/v1/roles/:id',
     async ({ params, body, set, store }) => {
-      const denied = ensureSuperadmin({ set, store });
+      const denied = ensureSuperadminAccess(store, set);
       if (denied) {
         return denied;
       }
@@ -287,7 +267,7 @@ export const rolesRoute = (app: Elysia, db: Db): Elysia => {
   app.delete(
     '/api/v1/roles/:id',
     async ({ params, set, store }) => {
-      const denied = ensureSuperadmin({ set, store });
+      const denied = ensureSuperadminAccess(store, set);
       if (denied) {
         return denied;
       }

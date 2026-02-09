@@ -1,8 +1,12 @@
 import { Elysia, t } from 'elysia';
 import { randomUUID } from 'crypto';
 import { Db } from 'mongodb';
-import { TASKS_COLLECTION, TaskDocument, TaskPayload } from '../db/collections';
-import { CreateTaskInput, createTask } from '../services/task-scheduler';
+import { TaskPayload } from '../db/collections';
+import {
+  CreateTaskInput,
+  createTask,
+  listTaskDocuments,
+} from '../services/task-scheduler';
 import { logAuditEvent, type AuditEventInput } from '../services/audit';
 import { extractTraceId, generateTraceId } from '../utils/trace-context';
 import { validateCallDepthFromHeaders } from '../utils/call-depth';
@@ -147,14 +151,11 @@ export const tasksRoute = (app: Elysia, db: Db): Elysia => {
         filter.org_id = actorOrgId;
       }
 
-      const collection = db.collection<TaskDocument>(TASKS_COLLECTION);
-      const total = await collection.countDocuments(filter);
-      const tasks = await collection
-        .find(filter)
-        .sort({ created_at: 1 })
-        .skip(offset)
-        .limit(limit)
-        .toArray();
+      const { data: tasks, total } = await listTaskDocuments(db, {
+        filter,
+        limit,
+        offset,
+      });
 
       return {
         success: true,
