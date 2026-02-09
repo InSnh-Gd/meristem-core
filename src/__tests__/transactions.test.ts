@@ -69,3 +69,39 @@ test('runInTransaction falls back to non-session execution when session factory 
 
   expect(value).toBe('without-session');
 });
+
+test('runInTransaction binds startSession context from db client', async (): Promise<void> => {
+  let endSessionCalls = 0;
+  let withTransactionCalls = 0;
+
+  const db = {
+    client: {
+      s: { connected: true },
+      startSession(this: { s?: unknown }) {
+        if (!this.s) {
+          throw new Error('missing client state');
+        }
+        return {
+          withTransaction: async (
+            work: () => Promise<void>,
+            _options?: unknown,
+          ): Promise<void> => {
+            withTransactionCalls += 1;
+            await work();
+          },
+          endSession: async (): Promise<void> => {
+            endSessionCalls += 1;
+          },
+        };
+      },
+    },
+  } as unknown as Db;
+
+  const result = await runInTransaction(db, async (session) =>
+    session ? 'with-session' : 'without-session',
+  );
+
+  expect(result).toBe('with-session');
+  expect(withTransactionCalls).toBe(1);
+  expect(endSessionCalls).toBe(1);
+});

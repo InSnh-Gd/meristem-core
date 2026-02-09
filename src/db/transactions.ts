@@ -1,6 +1,7 @@
 import type { ClientSession, Db, TransactionOptions } from 'mongodb';
 import { toDomainError } from '../errors/domain-error';
 import { recordDbTransactionMetric } from './observability';
+import { getMongoClient } from './connection';
 
 export type DbSession = ClientSession | null;
 
@@ -22,11 +23,17 @@ const DEFAULT_TRANSACTION_OPTIONS: TransactionOptions = {
 };
 
 const resolveSessionFactory = (db: Db): (() => ClientSession) | null => {
-  const candidate = (db as DbWithClient).client?.startSession;
-  if (typeof candidate !== 'function') {
-    return null;
+  const dbClient = (db as DbWithClient).client;
+  if (dbClient && typeof dbClient.startSession === 'function') {
+    return dbClient.startSession.bind(dbClient);
   }
-  return candidate;
+
+  const sharedClient = getMongoClient();
+  if (sharedClient && typeof sharedClient.startSession === 'function') {
+    return sharedClient.startSession.bind(sharedClient);
+  }
+
+  return null;
 };
 
 const toManagedSession = (session: ClientSession): ManagedSession => ({
