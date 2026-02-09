@@ -39,20 +39,10 @@ const GenericErrorSchema = t.Object({
   error: t.String(),
 });
 
-export const resultsRoute = (app: Elysia): Elysia => {
+export const resultsRoute = (app: Elysia, db: Db): Elysia => {
   app.post(
     '/api/v1/results',
     async ({ body, request, set }) => {
-      const db = (global as { db?: Db }).db;
-
-      if (!db) {
-        set.status = 500;
-        return {
-          success: false,
-          error: 'DATABASE_NOT_CONNECTED',
-        };
-      }
-
       const traceId = extractTraceId(request.headers) ?? generateTraceId();
       const callDepth = validateCallDepthFromHeaders(request.headers);
       if (!callDepth.ok) {

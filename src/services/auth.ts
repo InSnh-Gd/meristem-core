@@ -2,7 +2,8 @@ import bcrypt from 'bcrypt';
 import type { Db } from 'mongodb';
 import { jwt as createJwtPlugin } from '@elysiajs/jwt';
 import { getJwtSignSecret } from '../config';
-import { USERS_COLLECTION, type UserDocument } from '../db/collections';
+import type { UserDocument } from '../db/collections';
+import { findUserByUsername } from '../db/repositories/users';
 import { SUPERADMIN_ROLE_ID } from './bootstrap';
 
 const JWT_EXPIRATION_SECONDS = 24 * 60 * 60;
@@ -30,8 +31,7 @@ const getJwtSigner = (): ReturnType<typeof createJwtPlugin> => {
  * Returns the full user document only when the password matches.
  */
 export const authenticateUser = async (db: Db, username: string, password: string): Promise<UserDocument | null> => {
-  const collection = db.collection<UserDocument>(USERS_COLLECTION);
-  const user = await collection.findOne({ username });
+  const user = await findUserByUsername(db, username);
 
   if (!user) {
     return null;

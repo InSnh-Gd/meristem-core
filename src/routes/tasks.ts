@@ -1,8 +1,12 @@
 import { Elysia, t } from 'elysia';
 import { randomUUID } from 'crypto';
 import { Db } from 'mongodb';
-import { TASKS_COLLECTION, TaskDocument, TaskPayload } from '../db/collections';
-import { CreateTaskInput, createTask } from '../services/task-scheduler';
+import { TaskPayload } from '../db/collections';
+import {
+  CreateTaskInput,
+  createTask,
+  listTaskDocuments,
+} from '../services/task-scheduler';
 import { logAuditEvent, type AuditEventInput } from '../services/audit';
 import { extractTraceId, generateTraceId } from '../utils/trace-context';
 import { validateCallDepthFromHeaders } from '../utils/call-depth';
@@ -118,19 +122,10 @@ const resolveActorOrgId = async (
   return user.org_id;
 };
 
-export const tasksRoute = (app: Elysia): Elysia => {
+export const tasksRoute = (app: Elysia, db: Db): Elysia => {
   app.get(
     '/api/v1/tasks',
     async ({ query, set, store }) => {
-      const db = (global as { db?: Db }).db;
-      if (!db) {
-        set.status = 500;
-        return {
-          success: false,
-          error: 'DATABASE_NOT_CONNECTED',
-        };
-      }
-
       const authStore = store as AuthStore;
       if (!authStore.user) {
         set.status = 401;
@@ -156,14 +151,11 @@ export const tasksRoute = (app: Elysia): Elysia => {
         filter.org_id = actorOrgId;
       }
 
-      const collection = db.collection<TaskDocument>(TASKS_COLLECTION);
-      const total = await collection.countDocuments(filter);
-      const tasks = await collection
-        .find(filter)
-        .sort({ created_at: 1 })
-        .skip(offset)
-        .limit(limit)
-        .toArray();
+      const { data: tasks, total } = await listTaskDocuments(db, {
+        filter,
+        limit,
+        offset,
+      });
 
       return {
         success: true,
@@ -184,7 +176,6 @@ export const tasksRoute = (app: Elysia): Elysia => {
       response: {
         200: TasksListResponseSchema,
         401: TaskErrorResponseSchema,
-        500: TaskErrorResponseSchema,
       },
       beforeHandle: [requireAuth],
     },
@@ -193,16 +184,6 @@ export const tasksRoute = (app: Elysia): Elysia => {
   app.post(
     '/api/v1/tasks',
     async ({ body, request, set, store }) => {
-      const db = (global as { db?: Db }).db;
-
-      if (!db) {
-        set.status = 500;
-        return {
-          success: false,
-          error: 'DATABASE_NOT_CONNECTED',
-        };
-      }
-
       const authStore = store as AuthStore;
 
       if (!authStore.user) {

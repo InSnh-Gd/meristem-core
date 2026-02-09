@@ -143,10 +143,10 @@ test('joinRoute initializes hardware profile baseline for new nodes', async (): 
     },
   };
 
-  (global as { db?: Db }).db = createDbMock(nodeCollection);
+  const db = createDbMock(nodeCollection);
   const auditEvents: AuditEventInput[] = [];
   const app = new Elysia();
-  joinRoute(app, createAuditLogger(auditEvents));
+  joinRoute(app, db, createAuditLogger(auditEvents));
 
   const response = await app.handle(
     new Request('http://localhost/api/v1/join', {
@@ -178,7 +178,6 @@ test('joinRoute initializes hardware profile baseline for new nodes', async (): 
   expect(updates).toHaveLength(0);
   expect(auditEvents).toHaveLength(1);
 
-  delete (global as { db?: Db }).db;
 });
 
 test('joinRoute restores existing node when hardware profile hash matches baseline', async (): Promise<void> => {
@@ -221,9 +220,9 @@ test('joinRoute restores existing node when hardware profile hash matches baseli
     },
   };
 
-  (global as { db?: Db }).db = createDbMock(nodeCollection);
+  const db = createDbMock(nodeCollection);
   const app = new Elysia();
-  joinRoute(app, createAuditLogger([]));
+  joinRoute(app, db, createAuditLogger([]));
 
   const response = await app.handle(
     new Request('http://localhost/api/v1/join', {
@@ -252,7 +251,6 @@ test('joinRoute restores existing node when hardware profile hash matches baseli
   const driftInfo = updateSet?.hardware_profile_drift as Record<string, unknown> | undefined;
   expect(driftInfo?.detected).toBe(false);
 
-  delete (global as { db?: Db }).db;
 });
 
 test('joinRoute blocks recovery when hardware profile hash drifts', async (): Promise<void> => {
@@ -304,9 +302,9 @@ test('joinRoute blocks recovery when hardware profile hash drifts', async (): Pr
     },
   };
 
-  (global as { db?: Db }).db = createDbMock(nodeCollection);
+  const db = createDbMock(nodeCollection);
   const app = new Elysia();
-  joinRoute(app, createAuditLogger([]));
+  joinRoute(app, db, createAuditLogger([]));
 
   const response = await app.handle(
     new Request('http://localhost/api/v1/join', {
@@ -336,7 +334,6 @@ test('joinRoute blocks recovery when hardware profile hash drifts', async (): Pr
   expect(driftInfo?.baseline_hash).toBe(baselineHash);
   expect(driftInfo?.incoming_hash).toBe(driftHash);
 
-  delete (global as { db?: Db }).db;
 });
 
 test('joinRoute writes drift audit event when hardware profile hash drifts', async (): Promise<void> => {
@@ -381,10 +378,10 @@ test('joinRoute writes drift audit event when hardware profile hash drifts', asy
     updateOne: async (): Promise<{ modifiedCount: number }> => ({ modifiedCount: 1 }),
   };
 
-  (global as { db?: Db }).db = createDbMock(nodeCollection);
+  const db = createDbMock(nodeCollection);
   const auditEvents: AuditEventInput[] = [];
   const app = new Elysia();
-  joinRoute(app, createAuditLogger(auditEvents));
+  joinRoute(app, db, createAuditLogger(auditEvents));
 
   const response = await app.handle(
     new Request('http://localhost/api/v1/join', {
@@ -418,7 +415,6 @@ test('joinRoute writes drift audit event when hardware profile hash drifts', asy
   expect(auditMeta.baseline_hash).toBe(baselineHash);
   expect(auditMeta.incoming_hash).toBe(driftHash);
 
-  delete (global as { db?: Db }).db;
 });
 
 test('joinRoute rejects mismatched hardware_profile_hash when profile is provided', async (): Promise<void> => {
@@ -439,9 +435,9 @@ test('joinRoute rejects mismatched hardware_profile_hash when profile is provide
     },
   };
 
-  (global as { db?: Db }).db = createDbMock(nodeCollection);
+  const db = createDbMock(nodeCollection);
   const app = new Elysia();
-  joinRoute(app, createAuditLogger([]));
+  joinRoute(app, db, createAuditLogger([]));
 
   const response = await app.handle(
     new Request('http://localhost/api/v1/join', {
@@ -463,5 +459,4 @@ test('joinRoute rejects mismatched hardware_profile_hash when profile is provide
   expect(payload.error).toBe('HARDWARE_PROFILE_HASH_MISMATCH');
   expect(updates).toHaveLength(0);
 
-  delete (global as { db?: Db }).db;
 });

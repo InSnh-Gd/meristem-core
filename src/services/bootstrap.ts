@@ -4,11 +4,14 @@ import type { Db } from 'mongodb';
 import {
   ORGS_COLLECTION,
   ROLES_COLLECTION,
-  USERS_COLLECTION,
   type OrgDocument,
   type RoleDocument,
   type UserDocument,
 } from '../db/collections';
+import { toSessionOption } from '../db/repositories/shared';
+import { countUsers, insertUser } from '../db/repositories/users';
+import type { DbSession } from '../db/transactions';
+import { runInTransaction } from '../db/transactions';
 
 export const DEFAULT_ORG_ID = 'org-default';
 export const SUPERADMIN_ROLE_ID = 'role-superadmin';
@@ -38,36 +41,51 @@ export const generateBootstrapToken = (): string =>
  */
 export const validateBootstrapToken = (token: string): boolean => BOOTSTRAP_TOKEN_REGEX.test(token);
 
-const ensureDefaultOrgAndRole = async (db: Db): Promise<void> => {
+const ensureDefaultOrgAndRole = async (
+  db: Db,
+  session: DbSession,
+): Promise<void> => {
   const orgCollection = db.collection<OrgDocument>(ORGS_COLLECTION);
   const roleCollection = db.collection<RoleDocument>(ROLES_COLLECTION);
   const now = new Date();
 
-  const org = await orgCollection.findOne({ org_id: DEFAULT_ORG_ID });
+  const org = await orgCollection.findOne(
+    { org_id: DEFAULT_ORG_ID },
+    toSessionOption(session),
+  );
   if (!org) {
-    await orgCollection.insertOne({
-      org_id: DEFAULT_ORG_ID,
-      name: 'Default Organization',
-      slug: 'default',
-      owner_user_id: '',
-      settings: {},
-      created_at: now,
-      updated_at: now,
-    });
+    await orgCollection.insertOne(
+      {
+        org_id: DEFAULT_ORG_ID,
+        name: 'Default Organization',
+        slug: 'default',
+        owner_user_id: '',
+        settings: {},
+        created_at: now,
+        updated_at: now,
+      },
+      toSessionOption(session),
+    );
   }
 
-  const superadminRole = await roleCollection.findOne({ role_id: SUPERADMIN_ROLE_ID });
+  const superadminRole = await roleCollection.findOne(
+    { role_id: SUPERADMIN_ROLE_ID },
+    toSessionOption(session),
+  );
   if (!superadminRole) {
-    await roleCollection.insertOne({
-      role_id: SUPERADMIN_ROLE_ID,
-      name: SUPERADMIN_ROLE_NAME,
-      description: 'Built-in superadmin role',
-      permissions: ['*'],
-      is_builtin: true,
-      org_id: DEFAULT_ORG_ID,
-      created_at: now,
-      updated_at: now,
-    });
+    await roleCollection.insertOne(
+      {
+        role_id: SUPERADMIN_ROLE_ID,
+        name: SUPERADMIN_ROLE_NAME,
+        description: 'Built-in superadmin role',
+        permissions: ['*'],
+        is_builtin: true,
+        org_id: DEFAULT_ORG_ID,
+        created_at: now,
+        updated_at: now,
+      },
+      toSessionOption(session),
+    );
   }
 };
 
@@ -76,38 +94,40 @@ const ensureDefaultOrgAndRole = async (db: Db): Promise<void> => {
  * This should only succeed when the users collection is empty.
  */
 export const createFirstUser = async (db: Db, username: string, password: string): Promise<UserDocument> => {
-  const collection = db.collection<UserDocument>(USERS_COLLECTION);
-  const existingUsers = await collection.countDocuments();
-  if (existingUsers > 0) {
-    throw new Error('bootstrap already completed');
-  }
+  return runInTransaction(db, async (session) => {
+    const existingUsers = await countUsers(db, {}, session);
+    if (existingUsers > 0) {
+      throw new Error('bootstrap already completed');
+    }
 
-  await ensureDefaultOrgAndRole(db);
+    await ensureDefaultOrgAndRole(db, session);
 
-  const password_hash = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
-  const now = new Date();
-  const user: UserDocument = {
-    user_id: randomUUID(),
-    username,
-    password_hash,
-    role_ids: [SUPERADMIN_ROLE_ID],
-    org_id: DEFAULT_ORG_ID,
-    permissions: ['*'],
-    permissions_v: 1,
-    tokens: [],
-    created_at: now,
-    updated_at: now,
-  };
+    const password_hash = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
+    const now = new Date();
+    const user: UserDocument = {
+      user_id: randomUUID(),
+      username,
+      password_hash,
+      role_ids: [SUPERADMIN_ROLE_ID],
+      org_id: DEFAULT_ORG_ID,
+      permissions: ['*'],
+      permissions_v: 1,
+      tokens: [],
+      created_at: now,
+      updated_at: now,
+    };
 
-  await collection.insertOne(user);
-  await db.collection<OrgDocument>(ORGS_COLLECTION).updateOne(
-    { org_id: DEFAULT_ORG_ID },
-    {
-      $set: {
-        owner_user_id: user.user_id,
-        updated_at: now,
+    await insertUser(db, user, session);
+    await db.collection<OrgDocument>(ORGS_COLLECTION).updateOne(
+      { org_id: DEFAULT_ORG_ID },
+      {
+        $set: {
+          owner_user_id: user.user_id,
+          updated_at: now,
+        },
       },
-    },
-  );
-  return user;
+      toSessionOption(session),
+    );
+    return user;
+  });
 };

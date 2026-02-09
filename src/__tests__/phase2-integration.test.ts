@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { Elysia } from 'elysia';
-import type { Db } from 'mongodb';
 
 import { authRoute } from '../routes/auth';
 import { auditRoute } from '../routes/audit';
@@ -128,7 +127,6 @@ beforeEach((): void => {
 });
 
 afterEach((): void => {
-  delete (global as { db?: Db }).db;
   if (originalJwtSignSecret === undefined) {
     delete process.env.MERISTEM_SECURITY_JWT_SIGN_SECRET;
   } else {
@@ -138,16 +136,16 @@ afterEach((): void => {
 
 test('phase2 chain: bootstrap -> invitation -> role sync -> permission check -> org isolation', async (): Promise<void> => {
   const state = createInMemoryDbState();
-  (global as { db?: Db }).db = createInMemoryDb(state);
+  const db = createInMemoryDb(state);
 
   const app = new Elysia();
-  bootstrapRoute(app);
-  authRoute(app);
-  usersRoute(app);
-  rolesRoute(app);
-  tasksRoute(app);
-  auditRoute(app);
-  joinRoute(app);
+  bootstrapRoute(app, db);
+  authRoute(app, db);
+  usersRoute(app, db);
+  rolesRoute(app, db);
+  tasksRoute(app, db);
+  auditRoute(app, db);
+  joinRoute(app, db);
 
   const bootstrapResp = await bootstrap(app, 'admin', 'S3curePass!');
   expect(bootstrapResp.status).toBe(201);

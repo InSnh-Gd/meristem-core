@@ -27,6 +27,7 @@ export type WsServerMessage =
   | {
       type: 'ERROR';
       code: 'AUTH_REQUIRED' | 'AUTH_INVALID' | 'NOT_CONNECTED' | 'INVALID_MESSAGE' | 'INVALID_TOPIC';
+      error: string;
       message: string;
     }
   | {
@@ -204,6 +205,7 @@ const sendError = (
   sendServerMessage(ws, {
     type: 'ERROR',
     code,
+    error: code,
     message,
   });
 };

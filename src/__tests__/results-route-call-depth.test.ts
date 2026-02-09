@@ -33,10 +33,10 @@ const createMockDb = (state: TestState): Db => {
 test('results route rejects invalid call depth header before processing result', async (): Promise<void> => {
   resetAuditState();
   const state: TestState = { audits: [] };
-  (global as { db?: Db }).db = createMockDb(state);
+  const db = createMockDb(state);
 
   const app = new Elysia();
-  resultsRoute(app);
+  resultsRoute(app, db);
 
   const response = await app.handle(
     new Request('http://localhost/api/v1/results', {
@@ -60,6 +60,4 @@ test('results route rejects invalid call depth header before processing result',
   });
   expect(state.audits).toHaveLength(1);
   expect(state.audits[0]?.content).toContain('invalid call_depth');
-
-  delete (global as { db?: Db }).db;
 });

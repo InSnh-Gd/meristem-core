@@ -42,21 +42,13 @@ type AuditLogger = (db: Db, event: AuditEventInput) => Promise<AuditLog>;
 
 export const bootstrapRoute = (
   app: Elysia,
+  db: Db,
   auditLogger: AuditLogger = logAuditEvent,
 ): Elysia => {
   app.post(
     '/api/v1/auth/bootstrap',
     async ({ body, request, set }) => {
       const { bootstrap_token, username, password } = body;
-
-      const db = (global as { db?: Db }).db;
-      if (!db) {
-        set.status = 500;
-        return {
-          success: false,
-          error: 'DATABASE_NOT_CONNECTED',
-        };
-      }
 
       if (!validateBootstrapToken(bootstrap_token)) {
         set.status = 400;

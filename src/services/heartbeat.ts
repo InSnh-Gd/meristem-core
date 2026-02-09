@@ -1,5 +1,6 @@
 import { Db } from 'mongodb';
 import { Msg } from 'nats';
+import { NODES_COLLECTION, type NodeDocument } from '../db/collections';
 import { createLogger } from '../utils/logger';
 import type { TraceContext } from '../utils/trace-context';
 
@@ -42,7 +43,8 @@ export const updateNodeHeartbeat = async (
   timestamp: Date
 ): Promise<void> => {
   const logger = createLogger(traceContext);
-  const result = await db.collection('nodes').updateOne(
+  const nodesCollection = db.collection<NodeDocument>(NODES_COLLECTION);
+  const result = await nodesCollection.updateOne(
     { node_id: nodeId },
     {
       $set: {
@@ -69,8 +71,9 @@ export const checkNodeOffline = async (
 ): Promise<string[]> => {
   const logger = createLogger(traceContext);
   const threshold = new Date(Date.now() - thresholdMs);
+  const nodesCollection = db.collection<NodeDocument>(NODES_COLLECTION);
 
-  const result = await db.collection('nodes').updateMany(
+  const result = await nodesCollection.updateMany(
     {
       'status.online': true,
       'status.last_seen': { $lt: threshold },
@@ -88,9 +91,7 @@ export const checkNodeOffline = async (
   }
 
   // 返回离线节点 ID 列表（用于日志或通知）
-  const offlineNodes = await db
-    .collection('nodes')
-    .find(
+  const offlineNodes = await nodesCollection.find(
       {
         'status.online': false,
         'status.last_seen': { $lt: threshold },

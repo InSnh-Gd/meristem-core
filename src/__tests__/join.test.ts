@@ -2,7 +2,7 @@ import { Elysia } from 'elysia';
 import { test, expect } from 'bun:test';
 import type { Collection, Db } from 'mongodb';
 import type { AuditEventInput, AuditLog } from '../services/audit';
-import { NODES_COLLECTION, NodeDocument } from '../db/collections';
+import { NodeDocument } from '../db/collections';
 import { createNode, generateHWID, joinRoute, recoverNode, Persona } from '../routes/join';
 
 // 验证 generateHWID 针对固定 UUID / MAC 输出可预测的 64 字符哈希
@@ -108,8 +108,6 @@ test('joinRoute logs audit event for new nodes', async (): Promise<void> => {
     },
   };
 
-  (global as { db?: unknown }).db = mockDb as Db;
-
   const auditEvents: AuditEventInput[] = [];
   const auditLogger = async (_innerDb: Db, event: AuditEventInput): Promise<AuditLog> => {
     auditEvents.push(event);
@@ -122,7 +120,7 @@ test('joinRoute logs audit event for new nodes', async (): Promise<void> => {
   };
 
   const app = new Elysia();
-  joinRoute(app, auditLogger);
+  joinRoute(app, mockDb as Db, auditLogger);
 
   const traceId = 'trace-new-node';
   const response = await app.handle(
@@ -158,7 +156,6 @@ test('joinRoute logs audit event for new nodes', async (): Promise<void> => {
   });
   expect(auditEvents[0].node_id).toBe(payload.data.node_id);
 
-  delete (global as { db?: unknown }).db;
 });
 
 test('joinRoute logs audit event for existing nodes', async (): Promise<void> => {
@@ -200,8 +197,6 @@ test('joinRoute logs audit event for existing nodes', async (): Promise<void> =>
     },
   };
 
-  (global as { db?: unknown }).db = mockDb as Db;
-
   const auditEvents: AuditEventInput[] = [];
   const auditLogger = async (_innerDb: Db, event: AuditEventInput): Promise<AuditLog> => {
     auditEvents.push(event);
@@ -214,7 +209,7 @@ test('joinRoute logs audit event for existing nodes', async (): Promise<void> =>
   };
 
   const app = new Elysia();
-  joinRoute(app, auditLogger);
+  joinRoute(app, mockDb as Db, auditLogger);
 
   const traceId = 'trace-existing-node';
   const response = await app.handle(
@@ -247,5 +242,4 @@ test('joinRoute logs audit event for existing nodes', async (): Promise<void> =>
   expect(auditEvents[0].meta).toEqual({ persona: 'AGENT', status: 'existing', org_id: 'org-default' });
   expect(auditEvents[0].node_id).toBe(existingNode.node_id);
 
-  delete (global as { db?: unknown }).db;
 });
