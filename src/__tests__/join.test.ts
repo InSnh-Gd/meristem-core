@@ -1,6 +1,7 @@
 import { Elysia } from 'elysia';
 import { test, expect } from 'bun:test';
 import type { Collection, Db } from 'mongodb';
+import { WIRE_CONTRACT_VERSION } from '@insnh-gd/meristem-shared';
 import type { AuditEventInput, AuditLog } from '../services/audit';
 import { NodeDocument } from '../db/collections';
 import { createNode, generateHWID, joinRoute, recoverNode, Persona } from '../routes/join';
@@ -242,4 +243,41 @@ test('joinRoute logs audit event for existing nodes', async (): Promise<void> =>
   expect(auditEvents[0].meta).toEqual({ persona: 'AGENT', status: 'existing', org_id: 'org-default' });
   expect(auditEvents[0].node_id).toBe(existingNode.node_id);
 
+});
+
+test('joinRoute rejects mismatched wire contract version header', async (): Promise<void> => {
+  const nodeCollection = {
+    findOne: async (): Promise<NodeDocument | null> => null,
+    insertOne: async (): Promise<{ insertedId: string }> => ({ insertedId: 'n/a' }),
+    updateOne: async (): Promise<{ modifiedCount: number }> => ({ modifiedCount: 0 }),
+  };
+
+  const mockDb = {
+    collection: (_name: string): Collection<NodeDocument> =>
+      nodeCollection as unknown as Collection<NodeDocument>,
+  };
+
+  const app = new Elysia();
+  joinRoute(app, mockDb as Db);
+
+  const response = await app.handle(
+    new Request('http://localhost/api/v1/join', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-wire-contract-version': `${WIRE_CONTRACT_VERSION}-mismatch`,
+      },
+      body: JSON.stringify({
+        hwid: 'f'.repeat(64),
+        hostname: 'node-wire',
+        persona: 'AGENT',
+      }),
+    }),
+  );
+
+  expect(response.status).toBe(400);
+  await expect(response.json()).resolves.toEqual({
+    success: false,
+    error: 'WIRE_CONTRACT_VERSION_MISMATCH',
+  });
 });

@@ -1,6 +1,12 @@
 import { Elysia, t } from 'elysia';
 import { Db } from 'mongodb';
-import type { NodePersona } from '@insnh-gd/meristem-shared';
+import type {
+  JoinResponsePayload,
+  JoinStatus,
+  JoinSuccessData,
+  NodePersona,
+} from '@insnh-gd/meristem-shared';
+import { WIRE_CONTRACT_VERSION } from '@insnh-gd/meristem-shared';
 import { NodeDocument, NODES_COLLECTION, type NodeHardwareProfile } from '../db/collections';
 import { extractTraceId, generateTraceId } from '../utils/trace-context';
 import { DEFAULT_ORG_ID } from '../services/bootstrap';
@@ -311,6 +317,18 @@ export const joinRoute = (
   app.post(
     '/api/v1/join',
     async ({ body, set, request }) => {
+      const clientContractVersion = request.headers.get('x-wire-contract-version');
+      if (
+        clientContractVersion &&
+        clientContractVersion !== WIRE_CONTRACT_VERSION
+      ) {
+        set.status = 400;
+        return {
+          success: false,
+          error: 'WIRE_CONTRACT_VERSION_MISMATCH',
+        };
+      }
+
       const { hwid, hostname, persona, hardware_profile, hardware_profile_hash, org_id } = body;
       const incomingHardwareProfile = hardware_profile as NodeHardwareProfile | undefined;
       const incomingOrgId = typeof org_id === 'string' && org_id.length > 0 ? org_id : DEFAULT_ORG_ID;
@@ -330,7 +348,7 @@ export const joinRoute = (
       const existingNode = await recoverNode(db, hwid);
 
       let node_id: string;
-      let status: 'new' | 'existing' | 'pending_approval';
+      let status: JoinStatus;
       let auditLevel: 'INFO' | 'WARN' = 'INFO';
       let auditContent = 'Node joined';
       let auditMeta: Record<string, unknown> = { persona, org_id: incomingOrgId };
@@ -443,14 +461,16 @@ export const joinRoute = (
         console.error('[Audit] failed to log node join', auditError);
       }
 
-      return {
-        success: true,
-        data: {
-          node_id,
-          core_ip: '10.25.0.1',
-          status,
-        },
+      const responseData: JoinSuccessData = {
+        node_id,
+        core_ip: '10.25.0.1',
+        status,
       };
+      const response: JoinResponsePayload = {
+        success: true,
+        data: responseData,
+      };
+      return response;
     },
     {
       body: JoinRequestBodySchema,
