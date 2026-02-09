@@ -1,5 +1,5 @@
 import { Elysia } from 'elysia';
-import { connectDb } from './db/connection';
+import { closeDb, connectDb } from './db/connection';
 import { ensureDbIndexes } from './db/indexes';
 import { joinRoute } from './routes/join';
 import { auditRoute } from './routes/audit';
@@ -8,23 +8,30 @@ import { authRoute } from './routes/auth';
 import { tasksRoute } from './routes/tasks';
 import { resultsRoute } from './routes/results';
 import { metricsRoute } from './routes/metrics';
-import { connectNats, subscribe } from './nats/connection';
-import { handleHeartbeatMessage, startHeartbeatMonitor } from './services/heartbeat';
+import { closeNats, connectNats, subscribe } from './nats/connection';
+import {
+  handleHeartbeatMessage,
+  startHeartbeatMonitor,
+  stopHeartbeatMonitor,
+} from './services/heartbeat';
 import { createPulseMessageHandler } from './services/pulse-ingest';
 import { setupJetstreamLogs } from './services/jetstream-setup';
 import { createLogger } from './utils/logger';
 import { createTraceContext } from './utils/trace-context';
 import { loadConfig } from './config';
+import { resolveFeatureFlags } from './config/feature-flags';
 import { wsRoute } from './routes/ws';
 import { traceMiddleware } from './middleware/trace';
 import { usersRoute } from './routes/users';
 import { rolesRoute } from './routes/roles';
+import { createShutdownLifecycle } from './runtime/shutdown-lifecycle';
 
 export type AppConfig = {
   port?: number;
   nodeId?: string;
   healthRoute?: string;
   metadata?: Record<string, unknown>;
+  installSignalHandlers?: boolean;
 };
 
 const DEFAULT_PORT = 3000;
@@ -53,6 +60,7 @@ export const createApp = (config: AppConfig = {}): Elysia => {
 export const startApp = async (config: AppConfig = {}): Promise<Elysia> => {
   const port = resolvePort(config);
   const coreConfig = loadConfig();
+  const flags = resolveFeatureFlags();
   const initTraceContext = createTraceContext({
     traceId: 'init',
     nodeId: 'core',
@@ -105,7 +113,22 @@ export const startApp = async (config: AppConfig = {}): Promise<Elysia> => {
   wsRoute(app, { wsPath: coreConfig.server.ws_path });
 
   app.listen({ port });
+  const shutdown = createShutdownLifecycle(initLogger);
+  shutdown.addTask('heartbeat-monitor', () => {
+    stopHeartbeatMonitor(heartbeatTraceContext);
+  });
+  shutdown.addTask('nats-connection', async () => {
+    await closeNats(natsTraceContext);
+  });
+  shutdown.addTask('mongo-connection', async () => {
+    await closeDb(initTraceContext);
+  });
+  if (config.installSignalHandlers ?? import.meta.main) {
+    shutdown.installSignalHandlers();
+  }
+
   initLogger.info(`[Core] meristem-core listening on port ${port}`);
+  initLogger.info(`[Runtime] feature flags=${JSON.stringify(flags)}`);
   return app;
 };
 

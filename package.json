@@ -6,6 +6,10 @@
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
     "build": "bun build src/index.ts --outdir dist --target bun",
+    "typecheck:stable": "tsc --noEmit -p tsconfig.json",
+    "typecheck:next": "bun run src/cli/typecheck-next.ts",
+    "runtime:check": "bun run src/cli/runtime-check.ts",
+    "benchmark:baseline": "bun run src/cli/benchmark-baseline.ts",
     "test:integration": "NATS_URL=nats://localhost:4222 bun test --test-name-pattern '.*@integration.*'",
     "jwt:rotate": "bun run src/cli/jwt-rotate.ts rotate",
     "jwt:prune": "bun run src/cli/jwt-rotate.ts prune"

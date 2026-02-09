@@ -1,0 +1,29 @@
+{
+  "generatedAt": "2026-02-09T00:00:00.000Z",
+  "runtime": {
+    "bunVersion": "1.3.x",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "samples": [
+    {
+      "name": "json-stringify-parse",
+      "iterations": 20000,
+      "durationMs": 0,
+      "opsPerSecond": 0
+    },
+    {
+      "name": "uint8array-copy",
+      "iterations": 50000,
+      "durationMs": 0,
+      "opsPerSecond": 0
+    },
+    {
+      "name": "text-encode-decode",
+      "iterations": 50000,
+      "durationMs": 0,
+      "opsPerSecond": 0
+    }
+  ]
+}
+
