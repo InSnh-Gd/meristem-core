@@ -105,3 +105,41 @@ test('runInTransaction binds startSession context from db client', async (): Pro
   expect(withTransactionCalls).toBe(1);
   expect(endSessionCalls).toBe(1);
 });
+
+test('runInTransaction falls back to non-session execution when transactions are unsupported', async (): Promise<void> => {
+  let withTransactionCalls = 0;
+  let workCalls = 0;
+  let sessionCalls = 0;
+
+  const db = {
+    client: {
+      startSession: () => ({
+        withTransaction: async (
+          _work: () => Promise<void>,
+          _options?: unknown,
+        ): Promise<void> => {
+          withTransactionCalls += 1;
+          throw Object.assign(
+            new Error('Transaction numbers are only allowed on a replica set member or mongos'),
+            { code: 20, codeName: 'IllegalOperation' },
+          );
+        },
+        endSession: async (): Promise<void> => {},
+      }),
+    },
+  } as unknown as Db;
+
+  const value = await runInTransaction(db, async (session) => {
+    workCalls += 1;
+    if (session) {
+      sessionCalls += 1;
+      return 'with-session';
+    }
+    return 'without-session';
+  });
+
+  expect(value).toBe('without-session');
+  expect(withTransactionCalls).toBe(1);
+  expect(workCalls).toBe(1);
+  expect(sessionCalls).toBe(0);
+});

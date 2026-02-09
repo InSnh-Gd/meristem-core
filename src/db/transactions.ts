@@ -25,6 +25,7 @@ const DEFAULT_TRANSACTION_OPTIONS: TransactionOptions = {
 const resolveSessionFactory = (db: Db): (() => ClientSession) | null => {
   const dbClient = (db as DbWithClient).client;
   if (dbClient && typeof dbClient.startSession === 'function') {
+    // MongoDB driver methods rely on `this`; return a bound callable.
     return dbClient.startSession.bind(dbClient);
   }
 
@@ -42,6 +43,56 @@ const toManagedSession = (session: ClientSession): ManagedSession => ({
     await session.endSession();
   },
 });
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null;
+
+const getStringField = (value: unknown, key: string): string | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const candidate = value[key];
+  return typeof candidate === 'string' ? candidate : null;
+};
+
+const getNumericField = (value: unknown, key: string): number | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const candidate = value[key];
+  return typeof candidate === 'number' ? candidate : null;
+};
+
+const isTransactionUnsupportedError = (error: unknown): boolean => {
+  // Standalone MongoDB (non-replica-set) rejects transactions with IllegalOperation.
+  const code = getNumericField(error, 'code');
+  if (code === 20) {
+    return true;
+  }
+
+  const codeName = getStringField(error, 'codeName');
+  if (codeName === 'IllegalOperation') {
+    return true;
+  }
+
+  const message = getStringField(error, 'message');
+  if (
+    message &&
+    message.includes('Transaction numbers are only allowed on a replica set member or mongos')
+  ) {
+    return true;
+  }
+
+  const nestedMessage = getStringField(error, 'errmsg');
+  if (
+    nestedMessage &&
+    nestedMessage.includes('Transaction numbers are only allowed on a replica set member or mongos')
+  ) {
+    return true;
+  }
+
+  return false;
+};
 
 export const runInTransaction = async <T>(
   db: Db,
@@ -78,6 +129,11 @@ export const runInTransaction = async <T>(
       status: 'failed',
       durationMs: Date.now() - startedAt,
     });
+    if (!result.done && isTransactionUnsupportedError(error)) {
+      // Safe fallback: work was not committed inside a transaction.
+      // We rerun once without session to keep non-replica-set environments functional.
+      return work(null);
+    }
     throw toDomainError(error, 'TRANSACTION_ABORTED');
   }
 };

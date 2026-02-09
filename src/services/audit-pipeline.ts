@@ -376,6 +376,7 @@ const collectBacklogCount = async (
 };
 
 const adjustRuntimeBacklog = (delta: number): void => {
+  // Keep a monotonic non-negative shadow counter for hot-path backpressure checks.
   runtime.backlogCount = Math.max(0, runtime.backlogCount + delta);
 };
 
@@ -598,6 +599,7 @@ const claimPendingIntents = async (
 
   let claimCandidates = rows;
   if (claimCandidates.length < runtime.options.batchSize) {
+    // Reclaim expired leases so crash/restart cannot permanently stall backlog draining.
     const processing = await collection
       .find({ status: 'processing' })
       .sort({ created_at: 1, event_id: 1 })
