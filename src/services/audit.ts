@@ -70,6 +70,24 @@ export type AuditLog = {
    * 前一条日志的哈希值（首条日志为空字符串）
    */
   _previous_hash: string;
+
+  /**
+   * 幂等事件 ID（新流水线可选）
+   */
+  event_id?: string;
+
+  /**
+   * 链版本（兼容扩展）
+   */
+  chain_version?: number;
+
+  /**
+   * 分区链元数据（兼容扩展）
+   */
+  partition_id?: number;
+  partition_sequence?: number;
+  partition_hash?: string;
+  partition_previous_hash?: string;
 };
 
 /**
@@ -92,10 +110,11 @@ const AUDIT_SEQUENCE_STATE_ID = 'global';
  * 前驱日志等待策略
  *
  * 在高并发场景下，后续序号可能先于前驱完成插入。
- * 通过短重试等待前驱落库，确保 _previous_hash 精确指向 sequence-1。
+ * 通过带退避的等待前驱落库，确保 _previous_hash 精确指向 sequence-1。
  */
-const PREVIOUS_HASH_RETRY_ATTEMPTS = 64;
-const PREVIOUS_HASH_RETRY_DELAY_MS = 5;
+const PREVIOUS_HASH_MAX_WAIT_MS = 30_000;
+const PREVIOUS_HASH_INITIAL_RETRY_DELAY_MS = 2;
+const PREVIOUS_HASH_MAX_RETRY_DELAY_MS = 50;
 
 type AuditSequenceState = {
   _id: string;
@@ -282,19 +301,28 @@ const waitForPreviousHash = async (
   }
 
   const predecessorSequence = sequence - 1;
-  for (let attempt = 0; attempt <= PREVIOUS_HASH_RETRY_ATTEMPTS; attempt += 1) {
+  const startedAt = Date.now();
+  let delayMs = PREVIOUS_HASH_INITIAL_RETRY_DELAY_MS;
+  let attempts = 0;
+
+  for (;;) {
     const previousHash = await findLogHashBySequence(collection, predecessorSequence);
     if (previousHash !== null) {
       return previousHash;
     }
 
-    if (attempt < PREVIOUS_HASH_RETRY_ATTEMPTS) {
-      await sleep(PREVIOUS_HASH_RETRY_DELAY_MS);
+    attempts += 1;
+    const elapsedMs = Date.now() - startedAt;
+    if (elapsedMs >= PREVIOUS_HASH_MAX_WAIT_MS) {
+      break;
     }
+
+    await sleep(delayMs);
+    delayMs = Math.min(delayMs * 2, PREVIOUS_HASH_MAX_RETRY_DELAY_MS);
   }
 
   throw new Error(
-    `audit predecessor missing: sequence=${sequence}, predecessor=${predecessorSequence}, attempts=${PREVIOUS_HASH_RETRY_ATTEMPTS + 1}`,
+    `audit predecessor missing: sequence=${sequence}, predecessor=${predecessorSequence}, elapsed_ms=${Date.now() - startedAt}, attempts=${attempts}`,
   );
 };
 

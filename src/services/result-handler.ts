@@ -1,4 +1,5 @@
 import { Db } from 'mongodb';
+import type { DbSession } from '../db/transactions';
 
 import {
   TASKS_COLLECTION,
@@ -28,7 +29,8 @@ const UNKNOWN_ERROR_MESSAGE = 'UNSPECIFIED_ERROR';
 export const submitResult = async (
   db: Db,
   taskId: string,
-  result: TaskResultPayload
+  result: TaskResultPayload,
+  session: DbSession = null,
 ): Promise<TaskDocumentWithResultInfo | null> => {
   const collection = db.collection<TaskDocumentWithResultInfo>(TASKS_COLLECTION);
   const statusType = STATUS_MAP[result.status];
@@ -55,7 +57,10 @@ export const submitResult = async (
   const updated = await collection.findOneAndUpdate(
     { task_id: taskId },
     update,
-    { returnDocument: 'after' }
+    {
+      returnDocument: 'after',
+      ...(session ? { session } : {}),
+    },
   );
 
   return updated ?? null;

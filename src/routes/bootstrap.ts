@@ -4,11 +4,11 @@ import type { Db } from 'mongodb';
 import { extractTraceId, generateTraceId } from '../utils/trace-context';
 import { generateBootstrapToken, validateBootstrapToken, createFirstUser } from '../services/bootstrap';
 import {
-  logAuditEvent,
   type AuditEventInput,
   type AuditLog,
 } from '../services/audit';
 import { respondWithCode, respondWithError } from './route-errors';
+import { recordAuditEvent } from '../services/audit-pipeline';
 
 export const BootstrapRequestBodySchema = t.Object({
   bootstrap_token: t.String({
@@ -39,12 +39,18 @@ export const BootstrapErrorResponseSchema = t.Object({
   error: t.String(),
 });
 
-type AuditLogger = (db: Db, event: AuditEventInput) => Promise<AuditLog>;
+type AuditLogger = (db: Db, event: AuditEventInput) => Promise<AuditLog | null>;
+
+const defaultBootstrapAuditLogger: AuditLogger = (
+  db: Db,
+  event: AuditEventInput,
+): Promise<AuditLog | null> =>
+  recordAuditEvent(db, event, { routeTag: 'bootstrap' });
 
 export const bootstrapRoute = (
   app: Elysia,
   db: Db,
-  auditLogger: AuditLogger = logAuditEvent,
+  auditLogger: AuditLogger = defaultBootstrapAuditLogger,
 ): Elysia => {
   app.post(
     '/api/v1/auth/bootstrap',

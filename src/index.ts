@@ -25,6 +25,7 @@ import { traceMiddleware } from './middleware/trace';
 import { usersRoute } from './routes/users';
 import { rolesRoute } from './routes/roles';
 import { createShutdownLifecycle } from './runtime/shutdown-lifecycle';
+import { startAuditPipeline, stopAuditPipeline } from './services/audit-pipeline';
 
 export type AppConfig = {
   port?: number;
@@ -83,6 +84,7 @@ export const startApp = async (config: AppConfig = {}): Promise<Elysia> => {
     uri: coreConfig.database.mongo_uri,
   });
   await ensureDbIndexes(db, initTraceContext);
+  await startAuditPipeline(db, initTraceContext);
 
   await connectNats(initTraceContext);
 
@@ -119,6 +121,9 @@ export const startApp = async (config: AppConfig = {}): Promise<Elysia> => {
   const shutdown = createShutdownLifecycle(initLogger);
   shutdown.addTask('heartbeat-monitor', () => {
     stopHeartbeatMonitor(heartbeatTraceContext);
+  });
+  shutdown.addTask('audit-pipeline', async () => {
+    await stopAuditPipeline();
   });
   shutdown.addTask('nats-connection', async () => {
     await closeNats(natsTraceContext);

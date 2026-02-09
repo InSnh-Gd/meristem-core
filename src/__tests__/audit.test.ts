@@ -227,6 +227,45 @@ test('logAuditEvent waits predecessor when inserts finish out of order', async (
   expect(secondResult._previous_hash).toBe(firstResult._hash);
 });
 
+test('logAuditEvent waits for delayed predecessor beyond short retry windows', async (): Promise<void> => {
+  const { db } = createMockDb({
+    insertDelayMs: (sequence) => {
+      if (sequence === 1) {
+        return 380;
+      }
+      return 0;
+    },
+  });
+  resetAuditState();
+
+  const firstEvent: AuditEventInput = {
+    ts: 1670000004000,
+    level: 'INFO',
+    node_id: 'node-delay-1',
+    source: 'core',
+    trace_id: 'trace-delay',
+    content: 'first-delayed',
+    meta: { action: 'first-delayed' },
+  };
+  const secondEvent: AuditEventInput = {
+    ts: 1670000004001,
+    level: 'INFO',
+    node_id: 'node-delay-1',
+    source: 'core',
+    trace_id: 'trace-delay',
+    content: 'second-delayed',
+    meta: { action: 'second-delayed' },
+  };
+
+  const firstPromise = logAuditEvent(db, firstEvent);
+  await sleep(1);
+  const secondPromise = logAuditEvent(db, secondEvent);
+
+  const [firstResult, secondResult] = await Promise.all([firstPromise, secondPromise]);
+  expect(secondResult._sequence).toBe(2);
+  expect(secondResult._previous_hash).toBe(firstResult._hash);
+});
+
 test('logAuditEvent keeps chain integrity under high concurrency', async (): Promise<void> => {
   const { db, insertedLogs } = createMockDb({
     insertDelayMs: (sequence) => {

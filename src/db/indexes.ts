@@ -88,8 +88,15 @@ const INDEX_PLANS: readonly CollectionIndexPlan[] = [
     collection: 'audit_logs',
     specs: [
       { key: { _sequence: 1 }, name: 'uniq_audit_sequence', unique: true },
+      {
+        key: { event_id: 1 },
+        name: 'uniq_audit_event_id',
+        unique: true,
+        partialFilterExpression: { event_id: { $exists: true } },
+      },
       { key: { ts: -1 }, name: 'idx_audit_ts_desc' },
       { key: { trace_id: 1, _sequence: 1 }, name: 'idx_audit_trace_sequence' },
+      { key: { partition_id: 1, partition_sequence: 1 }, name: 'idx_audit_partition_sequence' },
       { key: { source: 1, ts: -1 }, name: 'idx_audit_source_ts' },
       { key: { level: 1, ts: -1 }, name: 'idx_audit_level_ts' },
       { key: { 'meta.actor': 1, ts: -1 }, name: 'idx_audit_actor_ts' },
@@ -99,6 +106,42 @@ const INDEX_PLANS: readonly CollectionIndexPlan[] = [
     collection: 'audit_state',
     specs: [
       { key: { value: 1 }, name: 'idx_audit_state_value' },
+    ],
+  },
+  {
+    collection: 'audit_intents',
+    specs: [
+      { key: { event_id: 1 }, name: 'uniq_audit_intent_event_id', unique: true },
+      { key: { status: 1, created_at: 1 }, name: 'idx_audit_intents_status_created' },
+      {
+        key: { partition_id: 1, status: 1, created_at: 1 },
+        name: 'idx_audit_intents_partition_status_created',
+      },
+      { key: { status: 1, lease_until: 1 }, name: 'idx_audit_intents_status_lease_until' },
+      {
+        key: { route_tag: 1, status: 1, created_at: 1 },
+        name: 'idx_audit_intents_route_status_created',
+      },
+    ],
+  },
+  {
+    collection: 'audit_partition_state',
+    specs: [
+      { key: { partition_id: 1 }, name: 'idx_audit_partition_state_partition_id' },
+    ],
+  },
+  {
+    collection: 'audit_global_anchor',
+    specs: [
+      { key: { anchor_id: 1 }, name: 'uniq_audit_anchor_id', unique: true },
+      { key: { ts: -1 }, name: 'idx_audit_anchor_ts_desc' },
+    ],
+  },
+  {
+    collection: 'audit_failures',
+    specs: [
+      { key: { event_id: 1 }, name: 'idx_audit_failures_event_id' },
+      { key: { created_at: -1 }, name: 'idx_audit_failures_created_desc' },
     ],
   },
 ];

@@ -1,5 +1,5 @@
 import { Elysia, t } from 'elysia';
-import { Db } from 'mongodb';
+import { Db, type ClientSession } from 'mongodb';
 import type {
   JoinResponsePayload,
   JoinStatus,
@@ -12,10 +12,13 @@ import { extractTraceId, generateTraceId } from '../utils/trace-context';
 import { DEFAULT_ORG_ID } from '../services/bootstrap';
 import { PERSONA_AGENT, PERSONA_GIG } from '../utils/persona';
 import {
-  logAuditEvent,
   type AuditEventInput,
   type AuditLog,
 } from '../services/audit';
+import { recordAuditEvent, isAuditPipelineReady } from '../services/audit-pipeline';
+import type { DbSession } from '../db/transactions';
+import { runInTransaction } from '../db/transactions';
+import { isDomainError } from '../errors/domain-error';
 
 /**
  * Persona 类型定义：节点角色标识
@@ -180,6 +183,9 @@ const resolveIncomingHardwareProfileHash = async (
   };
 };
 
+const toSessionOption = (session: DbSession | undefined): { session?: ClientSession } =>
+  session ? { session } : {};
+
 /**
  * 纯函数：生成 HWID（硬件唯一指纹）
  * 基于 docs/standards/HARDWARE_PROTOCOL.md §2 HWID 生成规范
@@ -220,6 +226,7 @@ export const createNode = async (
     hardwareProfile?: NodeHardwareProfile;
     hardwareProfileHash?: string;
     orgId?: string;
+    session?: DbSession;
   } = {},
 ): Promise<NodeDocument> => {
   // 生成 node_id：node-{timestamp}-{random}
@@ -272,7 +279,10 @@ export const createNode = async (
     created_at: now,
   };
 
-  await db.collection<NodeDocument>(NODES_COLLECTION).insertOne(newNode);
+  await db.collection<NodeDocument>(NODES_COLLECTION).insertOne(
+    newNode,
+    toSessionOption(options.session),
+  );
   return newNode;
 };
 
@@ -287,10 +297,11 @@ export const createNode = async (
 export const recoverNode = async (
   db: Db,
   hwid: string,
+  session: DbSession = null,
 ): Promise<NodeDocument | null> => {
   const node = await db
     .collection<NodeDocument>(NODES_COLLECTION)
-    .findOne({ hwid });
+    .findOne({ hwid }, toSessionOption(session));
   return node;
 };
 
@@ -307,12 +318,22 @@ export const recoverNode = async (
  * @param app - Elysia 应用实例
  * @returns 配置了 join 路由的 Elysia 实例
  */
-type AuditLogger = (db: Db, event: AuditEventInput) => Promise<AuditLog>;
+type AuditLogger = (db: Db, event: AuditEventInput, session?: DbSession) => Promise<AuditLog | null>;
+
+const defaultJoinAuditLogger: AuditLogger = (
+  db: Db,
+  event: AuditEventInput,
+  session?: DbSession,
+): Promise<AuditLog | null> =>
+  recordAuditEvent(db, event, {
+    routeTag: 'join',
+    session,
+  });
 
 export const joinRoute = (
   app: Elysia,
   db: Db,
-  auditLogger: AuditLogger = logAuditEvent,
+  auditLogger: AuditLogger = defaultJoinAuditLogger,
 ): Elysia => {
   app.post(
     '/api/v1/join',
@@ -345,127 +366,166 @@ export const joinRoute = (
       }
       const incomingHash = incomingHashResolution.hash;
 
-      const existingNode = await recoverNode(db, hwid);
+      const traceId = extractTraceId(request.headers) ?? generateTraceId();
+      const executeJoinFlow = async (session: DbSession = null): Promise<{
+        responseData: JoinSuccessData;
+        auditEvent: AuditEventInput;
+      }> => {
+        const existingNode = await recoverNode(db, hwid, session);
 
-      let node_id: string;
-      let status: JoinStatus;
-      let auditLevel: 'INFO' | 'WARN' = 'INFO';
-      let auditContent = 'Node joined';
-      let auditMeta: Record<string, unknown> = { persona, org_id: incomingOrgId };
-      const now = new Date();
+        let node_id: string;
+        let status: JoinStatus;
+        let auditLevel: 'INFO' | 'WARN' = 'INFO';
+        let auditContent = 'Node joined';
+        let auditMeta: Record<string, unknown> = { persona, org_id: incomingOrgId };
+        const now = new Date();
 
-      if (existingNode) {
-        node_id = existingNode.node_id;
-        const baselineHash = existingNode.hardware_profile_hash;
-        const driftDetected =
-          typeof baselineHash === 'string' &&
-          baselineHash.length > 0 &&
-          baselineHash !== incomingHash;
+        if (existingNode) {
+          node_id = existingNode.node_id;
+          const baselineHash = existingNode.hardware_profile_hash;
+          const driftDetected =
+            typeof baselineHash === 'string' &&
+            baselineHash.length > 0 &&
+            baselineHash !== incomingHash;
 
-        if (driftDetected) {
-          status = 'pending_approval';
-          auditLevel = 'WARN';
-          auditContent = 'Node join blocked by hardware profile drift';
-          auditMeta = {
-            ...auditMeta,
-            status,
-            drift_detected: true,
-            baseline_hash: baselineHash,
-            incoming_hash: incomingHash,
-          };
+          if (driftDetected) {
+            status = 'pending_approval';
+            auditLevel = 'WARN';
+            auditContent = 'Node join blocked by hardware profile drift';
+            auditMeta = {
+              ...auditMeta,
+              status,
+              drift_detected: true,
+              baseline_hash: baselineHash,
+              incoming_hash: incomingHash,
+            };
 
-          await db
-            .collection<NodeDocument>(NODES_COLLECTION)
-            .updateOne(
-              { node_id },
-              {
-                $set: {
-                  hostname,
-                  persona,
-                  org_id: existingNode.org_id || incomingOrgId,
-                  ...(incomingHardwareProfile ? { hardware_profile: incomingHardwareProfile } : {}),
-                  ...(incomingHash ? { hardware_profile_hash: incomingHash } : {}),
-                  hardware_profile_drift: {
-                    detected: true,
-                    baseline_hash: baselineHash,
-                    incoming_hash: incomingHash,
-                    detected_at: now,
+            await db
+              .collection<NodeDocument>(NODES_COLLECTION)
+              .updateOne(
+                { node_id },
+                {
+                  $set: {
+                    hostname,
+                    persona,
+                    org_id: existingNode.org_id || incomingOrgId,
+                    ...(incomingHardwareProfile ? { hardware_profile: incomingHardwareProfile } : {}),
+                    ...(incomingHash ? { hardware_profile_hash: incomingHash } : {}),
+                    hardware_profile_drift: {
+                      detected: true,
+                      baseline_hash: baselineHash,
+                      incoming_hash: incomingHash,
+                      detected_at: now,
+                    },
+                    'status.online': false,
+                    'status.connection_status': 'pending_approval',
+                    'status.last_seen': now,
                   },
-                  'status.online': false,
-                  'status.connection_status': 'pending_approval',
-                  'status.last_seen': now,
                 },
-              },
-            );
+                toSessionOption(session),
+              );
+          } else {
+            status = 'existing';
+            const nextBaselineHash = baselineHash ?? incomingHash;
+            auditMeta = {
+              ...auditMeta,
+              status,
+            };
+
+            await db
+              .collection<NodeDocument>(NODES_COLLECTION)
+              .updateOne(
+                { node_id },
+                {
+                  $set: {
+                    hostname,
+                    persona,
+                    org_id: existingNode.org_id || incomingOrgId,
+                    ...(incomingHardwareProfile ? { hardware_profile: incomingHardwareProfile } : {}),
+                    ...(incomingHash ? { hardware_profile_hash: incomingHash } : {}),
+                    hardware_profile_drift: {
+                      detected: false,
+                      baseline_hash: nextBaselineHash,
+                      incoming_hash: incomingHash,
+                    },
+                    'status.online': true,
+                    'status.connection_status': 'online',
+                    'status.last_seen': now,
+                  },
+                },
+                toSessionOption(session),
+              );
+          }
         } else {
-          status = 'existing';
-          const nextBaselineHash = baselineHash ?? incomingHash;
+          const newNode = await createNode(db, hwid, persona, {
+            hostname,
+            hardwareProfile: incomingHardwareProfile,
+            hardwareProfileHash: incomingHash,
+            orgId: incomingOrgId,
+            session,
+          });
+          node_id = newNode.node_id;
+          status = 'new';
           auditMeta = {
             ...auditMeta,
             status,
           };
-
-          await db
-            .collection<NodeDocument>(NODES_COLLECTION)
-            .updateOne(
-              { node_id },
-              {
-                $set: {
-                  hostname,
-                  persona,
-                  org_id: existingNode.org_id || incomingOrgId,
-                  ...(incomingHardwareProfile ? { hardware_profile: incomingHardwareProfile } : {}),
-                  ...(incomingHash ? { hardware_profile_hash: incomingHash } : {}),
-                  hardware_profile_drift: {
-                    detected: false,
-                    baseline_hash: nextBaselineHash,
-                    incoming_hash: incomingHash,
-                  },
-                  'status.online': true,
-                  'status.connection_status': 'online',
-                  'status.last_seen': now,
-                },
-              },
-            );
         }
-      } else {
-        const newNode = await createNode(db, hwid, persona, {
-          hostname,
-          hardwareProfile: incomingHardwareProfile,
-          hardwareProfileHash: incomingHash,
-          orgId: incomingOrgId,
-        });
-        node_id = newNode.node_id;
-        status = 'new';
-        auditMeta = {
-          ...auditMeta,
-          status,
+
+        const auditEvent: AuditEventInput = {
+          ts: Date.now(),
+          level: auditLevel,
+          node_id,
+          source: 'join',
+          trace_id: traceId,
+          content: auditContent,
+          meta: auditMeta,
         };
 
-      }
-
-      const traceId = extractTraceId(request.headers) ?? generateTraceId();
-      const auditEvent: AuditEventInput = {
-        ts: Date.now(),
-        level: auditLevel,
-        node_id,
-        source: 'join',
-        trace_id: traceId,
-        content: auditContent,
-        meta: auditMeta,
+        return {
+          responseData: {
+            node_id,
+            core_ip: '10.25.0.1',
+            status,
+          },
+          auditEvent,
+        };
       };
 
-      try {
-        await auditLogger(db, auditEvent);
-      } catch (auditError) {
-        console.error('[Audit] failed to log node join', auditError);
+      const useTransactionalIntake = isAuditPipelineReady() && auditLogger === defaultJoinAuditLogger;
+
+      let responseData: JoinSuccessData;
+      if (useTransactionalIntake) {
+        try {
+          responseData = await runInTransaction(db, async (session) => {
+            const result = await executeJoinFlow(session);
+            await auditLogger(db, result.auditEvent, session);
+            return result.responseData;
+          });
+        } catch (error) {
+          if (isDomainError(error) && error.code === 'AUDIT_BACKPRESSURE') {
+            set.status = 503;
+            set.headers['Retry-After'] = '1';
+            return {
+              success: false,
+              error: 'AUDIT_BACKPRESSURE',
+            };
+          }
+          console.error('[Join] failed to persist join transaction', error);
+          set.status = 500;
+          return {
+            success: false,
+            error: 'INTERNAL_ERROR',
+          };
+        }
+      } else {
+        const result = await executeJoinFlow();
+        responseData = result.responseData;
+        void auditLogger(db, result.auditEvent).catch((auditError) => {
+          console.error('[Audit] failed to log node join', auditError);
+        });
       }
 
-      const responseData: JoinSuccessData = {
-        node_id,
-        core_ip: '10.25.0.1',
-        status,
-      };
       const response: JoinResponsePayload = {
         success: true,
         data: responseData,
@@ -481,6 +541,10 @@ export const joinRoute = (
           error: t.String(),
         }),
         500: t.Object({
+          success: t.Boolean(),
+          error: t.String(),
+        }),
+        503: t.Object({
           success: t.Boolean(),
           error: t.String(),
         }),

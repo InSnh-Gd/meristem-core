@@ -8,13 +8,16 @@ import {
   createTask,
   listTaskDocuments,
 } from '../services/task-scheduler';
-import { logAuditEvent, type AuditEventInput } from '../services/audit';
+import { type AuditEventInput } from '../services/audit';
 import { extractTraceId, generateTraceId } from '../utils/trace-context';
 import { validateCallDepthFromHeaders } from '../utils/call-depth';
 import { requireAuth, type AuthStore } from '../middleware/auth';
 import { DEFAULT_ORG_ID } from '../services/bootstrap';
 import { getUserById } from '../services/user';
 import { respondWithCode, respondWithError } from './route-errors';
+import { runInTransaction } from '../db/transactions';
+import { isDomainError } from '../errors/domain-error';
+import { isAuditPipelineReady, recordAuditEvent } from '../services/audit-pipeline';
 
 const DEFAULT_LEASE_DURATION_MS = 60 * 60 * 1000;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
@@ -213,7 +216,7 @@ export const tasksRoute = (app: Elysia, db: Db): Elysia => {
         };
 
         try {
-          await logAuditEvent(db, invalidDepthAudit);
+          await recordAuditEvent(db, invalidDepthAudit, { routeTag: 'tasks' });
         } catch (auditError) {
           console.error('[Audit] failed to log invalid call_depth rejection', auditError);
         }
@@ -251,16 +254,6 @@ export const tasksRoute = (app: Elysia, db: Db): Elysia => {
         },
       };
 
-      try {
-        await createTask(db, taskData);
-      } catch (error) {
-        console.error('[Tasks] failed to persist task', error);
-        return respondWithError(
-          set,
-          new DomainError('TASK_CREATION_FAILED', { cause: error }),
-        );
-      }
-
       const auditEvent: AuditEventInput = {
         ts: Date.now(),
         level: 'INFO',
@@ -278,9 +271,25 @@ export const tasksRoute = (app: Elysia, db: Db): Elysia => {
       };
 
       try {
-        await logAuditEvent(db, auditEvent);
-      } catch (auditError) {
-        console.error('[Audit] failed to log task creation', auditError);
+        if (isAuditPipelineReady()) {
+          await runInTransaction(db, async (session) => {
+            await createTask(db, taskData, session);
+            await recordAuditEvent(db, auditEvent, { routeTag: 'tasks', session });
+          });
+        } else {
+          await createTask(db, taskData);
+          await recordAuditEvent(db, auditEvent, { routeTag: 'tasks' });
+        }
+      } catch (error) {
+        if (isDomainError(error) && error.code === 'AUDIT_BACKPRESSURE') {
+          set.headers['Retry-After'] = '1';
+          return respondWithCode(set, 'AUDIT_BACKPRESSURE');
+        }
+        console.error('[Tasks] failed to persist task or audit intent', error);
+        return respondWithError(
+          set,
+          new DomainError('TASK_CREATION_FAILED', { cause: error }),
+        );
       }
 
       set.status = 201;
@@ -295,6 +304,7 @@ export const tasksRoute = (app: Elysia, db: Db): Elysia => {
         201: TaskCreatedResponseSchema,
         400: TaskErrorResponseSchema,
         401: TaskErrorResponseSchema,
+        503: TaskErrorResponseSchema,
         500: TaskErrorResponseSchema,
       },
       beforeHandle: [requireAuth],
