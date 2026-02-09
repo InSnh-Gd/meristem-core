@@ -57,6 +57,8 @@ test('ensureDbIndexes creates expected unique and query indexes', async (): Prom
     NODES_COLLECTION,
     ORGS_COLLECTION,
     INVITATIONS_COLLECTION,
+    'audit_logs',
+    'audit_state',
   ]));
 
   const usersIndexes = calls.find((entry) => entry.collection === USERS_COLLECTION)?.specs ?? [];

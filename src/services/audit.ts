@@ -81,13 +81,34 @@ export type AuditEventInput = Omit<AuditLog, '_sequence' | '_hash' | '_previous_
  * 审计集合名称
  */
 export const AUDIT_COLLECTION = 'audit_logs';
+export const AUDIT_STATE_COLLECTION = 'audit_state';
 
 /**
- * 模块级状态：当前序列号
- *
- * 首次调用时从数据库读取最新序列号初始化
+ * 审计序列状态文档主键
  */
-let currentSequence: number | null = null;
+const AUDIT_SEQUENCE_STATE_ID = 'global';
+
+/**
+ * 前驱日志等待策略
+ *
+ * 在高并发场景下，后续序号可能先于前驱完成插入。
+ * 通过短重试等待前驱落库，确保 _previous_hash 精确指向 sequence-1。
+ */
+const PREVIOUS_HASH_RETRY_ATTEMPTS = 64;
+const PREVIOUS_HASH_RETRY_DELAY_MS = 5;
+
+type AuditSequenceState = {
+  _id: string;
+  value: number;
+};
+
+const isDuplicateKeyError = (error: unknown): boolean => {
+  if (typeof error !== 'object' || error === null) {
+    return false;
+  }
+  const candidate = error as { code?: unknown };
+  return candidate.code === 11000;
+};
 
 /**
  * 稳定 JSON 序列化函数
@@ -198,40 +219,83 @@ export const verifyChain = (logs: AuditLog[]): { valid: boolean; error?: string 
   return { valid: true };
 };
 
+const sleep = async (durationMs: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, durationMs);
+  });
+
 /**
- * 初始化序列号
+ * 原子分配序列号
  *
- * 从数据库读取最新的序列号，用于初始化模块级状态
- *
- * @param db - MongoDB 数据库实例
- * @returns 最新的序列号（0 表示无历史日志）
+ * 使用 findOneAndUpdate + $inc 保证并发下序号唯一且严格递增。
  */
-const initializeSequence = async (db: Db): Promise<number> => {
-  const collection: Collection<AuditLog> = db.collection(AUDIT_COLLECTION);
+const allocateSequence = async (db: Db): Promise<number> => {
+  const auditCollection: Collection<AuditLog> = db.collection(AUDIT_COLLECTION);
+  const stateCollection: Collection<AuditSequenceState> = db.collection(AUDIT_STATE_COLLECTION);
 
-  // 查找序列号最大的日志
-  const latestLog = await collection.findOne({}, { sort: { _sequence: -1 } });
-
-  if (latestLog) {
-    return latestLog._sequence;
+  const existingState = await stateCollection.findOne({ _id: AUDIT_SEQUENCE_STATE_ID });
+  if (!existingState) {
+    const latestLog = await auditCollection.findOne({}, { sort: { _sequence: -1 } });
+    const latestSequence = latestLog?._sequence ?? 0;
+    try {
+      await stateCollection.insertOne({
+        _id: AUDIT_SEQUENCE_STATE_ID,
+        value: latestSequence,
+      });
+    } catch (error) {
+      if (!isDuplicateKeyError(error)) {
+        throw error;
+      }
+    }
   }
 
-  return 0;
+  const state = await stateCollection.findOneAndUpdate(
+    { _id: AUDIT_SEQUENCE_STATE_ID },
+    { $inc: { value: 1 } },
+    { upsert: true, returnDocument: 'after' },
+  );
+
+  if (state === null || typeof state.value !== 'number') {
+    throw new Error('audit sequence allocation failed');
+  }
+
+  return state.value;
 };
 
-/**
- * 获取当前序列号
- *
- * 如果尚未初始化，则从数据库读取最新序列号
- *
- * @param db - MongoDB 数据库实例
- * @returns 当前序列号
- */
-const getCurrentSequence = async (db: Db): Promise<number> => {
-  if (currentSequence === null) {
-    currentSequence = await initializeSequence(db);
+const findLogHashBySequence = async (
+  collection: Collection<AuditLog>,
+  sequence: number,
+): Promise<string | null> => {
+  const previousLog = await collection.findOne(
+    { _sequence: sequence },
+    { projection: { _hash: 1 } },
+  );
+  return previousLog?._hash ?? null;
+};
+
+const waitForPreviousHash = async (
+  collection: Collection<AuditLog>,
+  sequence: number,
+): Promise<string> => {
+  if (sequence <= 1) {
+    return '';
   }
-  return currentSequence;
+
+  const predecessorSequence = sequence - 1;
+  for (let attempt = 0; attempt <= PREVIOUS_HASH_RETRY_ATTEMPTS; attempt += 1) {
+    const previousHash = await findLogHashBySequence(collection, predecessorSequence);
+    if (previousHash !== null) {
+      return previousHash;
+    }
+
+    if (attempt < PREVIOUS_HASH_RETRY_ATTEMPTS) {
+      await sleep(PREVIOUS_HASH_RETRY_DELAY_MS);
+    }
+  }
+
+  throw new Error(
+    `audit predecessor missing: sequence=${sequence}, predecessor=${predecessorSequence}, attempts=${PREVIOUS_HASH_RETRY_ATTEMPTS + 1}`,
+  );
 };
 
 /**
@@ -252,30 +316,45 @@ export const logAuditEvent = async (
   event: AuditEventInput
 ): Promise<AuditLog> => {
   const collection: Collection<AuditLog> = db.collection(AUDIT_COLLECTION);
+  const stateCollection: Collection<AuditSequenceState> = db.collection(AUDIT_STATE_COLLECTION);
 
-  // 获取并递增序列号
-  const sequence = (await getCurrentSequence(db)) + 1;
-  currentSequence = sequence;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    // 原子获取序列号，并精确等待前驱日志落库
+    const sequence = await allocateSequence(db);
+    const previousHash = await waitForPreviousHash(collection, sequence);
 
-  // 查询前一条日志的哈希值
-  const previousLog = await collection.findOne({}, { sort: { _sequence: -1 } });
-  const previousHash = previousLog ? previousLog._hash : '';
+    // 构建完整的审计日志
+    const auditLog: AuditLog = {
+      ...event,
+      _sequence: sequence,
+      _previous_hash: previousHash,
+      _hash: '', // 稍后计算
+    };
 
-  // 构建完整的审计日志
-  const auditLog: AuditLog = {
-    ...event,
-    _sequence: sequence,
-    _previous_hash: previousHash,
-    _hash: '', // 稍后计算
-  };
+    // 计算哈希值
+    auditLog._hash = calculateHash(auditLog);
 
-  // 计算哈希值
-  auditLog._hash = calculateHash(auditLog);
+    try {
+      // 写入数据库
+      await collection.insertOne(auditLog);
+      return auditLog;
+    } catch (error) {
+      if (!isDuplicateKeyError(error) || attempt > 0) {
+        throw error;
+      }
 
-  // 写入数据库
-  await collection.insertOne(auditLog);
+      // 自愈：当 audit_state 落后于历史 audit_logs 时，先提升计数器再重试
+      const latestLog = await collection.findOne({}, { sort: { _sequence: -1 } });
+      const latestSequence = latestLog?._sequence ?? 0;
+      await stateCollection.findOneAndUpdate(
+        { _id: AUDIT_SEQUENCE_STATE_ID },
+        { $max: { value: latestSequence } },
+        { upsert: true },
+      );
+    }
+  }
 
-  return auditLog;
+  throw new Error('audit write retry exhausted');
 };
 
 /**
@@ -284,5 +363,5 @@ export const logAuditEvent = async (
  * 清除缓存的序列号，强制下次调用时重新从数据库读取
  */
 export const resetAuditState = (): void => {
-  currentSequence = null;
+  // 仅保留测试兼容入口；当前实现不依赖模块级缓存状态
 };

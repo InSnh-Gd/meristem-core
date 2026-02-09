@@ -95,6 +95,12 @@ const INDEX_PLANS: readonly CollectionIndexPlan[] = [
       { key: { 'meta.actor': 1, ts: -1 }, name: 'idx_audit_actor_ts' },
     ],
   },
+  {
+    collection: 'audit_state',
+    specs: [
+      { key: { value: 1 }, name: 'idx_audit_state_value' },
+    ],
+  },
 ];
 
 const createCollectionIndexes = async (
