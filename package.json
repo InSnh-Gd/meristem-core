@@ -18,7 +18,7 @@
     "jwt:run:prune": "bun run src/cli/jwt-rotate.ts prune"
   },
   "dependencies": {
-    "@insnh-gd/meristem-shared": "npm:@jsr/insnh-gd__meristem-shared@^0.1.0",
+    "@insnh-gd/meristem-shared": "npm:@jsr/insnh-gd__meristem-shared@^0.1.4",
     "@elysiajs/jwt": "^1.4.0",
     "@iarna/toml": "^2.2.5",
     "bcrypt": "^6.0.0",
@@ -29,7 +29,7 @@
     "nats": "^2.29.3"
   },
   "devDependencies": {
-    "@insnh-gd/meristem-tooling": "npm:@jsr/insnh-gd__meristem-tooling@^0.1.1",
+    "@insnh-gd/meristem-tooling": "npm:@jsr/insnh-gd__meristem-tooling@^0.1.2",
     "@types/bun": "latest",
     "pino": "^10.3.0",
     "typescript": "^5.0.0"
