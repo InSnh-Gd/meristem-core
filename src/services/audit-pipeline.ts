@@ -6,6 +6,18 @@ import { runInTransaction } from '../db/transactions';
 import { createLogger, type Logger } from '../utils/logger';
 import type { TraceContext } from '../utils/trace-context';
 import {
+  AUDIT_FAILURES_COLLECTION,
+  AUDIT_GLOBAL_ANCHOR_COLLECTION,
+  AUDIT_INTENTS_COLLECTION,
+  AUDIT_PARTITION_STATE_COLLECTION,
+  getAnchorCollection,
+  getFailureCollection,
+  getIntentsCollection,
+  getLogsCollection,
+  getPartitionStateCollection,
+  getStateCollection,
+} from './audit-pipeline-store';
+import {
   calculatePartitionHash,
   calculatePartitionId,
   calculatePayloadDigest,
@@ -19,18 +31,18 @@ import {
   type AuditPipelineStartOptions,
 } from './audit-pipeline-options';
 import {
-  AUDIT_COLLECTION,
-  AUDIT_STATE_COLLECTION,
   calculateHash,
   logAuditEvent,
   type AuditEventInput,
   type AuditLog,
 } from './audit';
 
-export const AUDIT_INTENTS_COLLECTION = 'audit_intents';
-export const AUDIT_PARTITION_STATE_COLLECTION = 'audit_partition_state';
-export const AUDIT_GLOBAL_ANCHOR_COLLECTION = 'audit_global_anchor';
-export const AUDIT_FAILURES_COLLECTION = 'audit_failures';
+export {
+  AUDIT_FAILURES_COLLECTION,
+  AUDIT_GLOBAL_ANCHOR_COLLECTION,
+  AUDIT_INTENTS_COLLECTION,
+  AUDIT_PARTITION_STATE_COLLECTION,
+};
 
 const AUDIT_STATE_ID = 'global';
 
@@ -211,29 +223,11 @@ const AUDIT_LOG_WRITE_MISMATCH = 'AUDIT_LOG_WRITE_MISMATCH';
 const AUDIT_GLOBAL_TAIL_CONFLICT = 'AUDIT_GLOBAL_TAIL_CONFLICT';
 const AUDIT_PARTITION_TAIL_CONFLICT = 'AUDIT_PARTITION_TAIL_CONFLICT';
 
-const getIntentsCollection = (db: Db): Collection<AuditIntent> =>
-  db.collection<AuditIntent>(AUDIT_INTENTS_COLLECTION);
-
-const getLogsCollection = (db: Db): Collection<AuditLog> =>
-  db.collection<AuditLog>(AUDIT_COLLECTION);
-
-const getStateCollection = (db: Db): Collection<AuditStateDocument> =>
-  db.collection<AuditStateDocument>(AUDIT_STATE_COLLECTION);
-
-const getPartitionStateCollection = (db: Db): Collection<AuditPartitionState> =>
-  db.collection<AuditPartitionState>(AUDIT_PARTITION_STATE_COLLECTION);
-
-const getAnchorCollection = (db: Db): Collection<AuditGlobalAnchor> =>
-  db.collection<AuditGlobalAnchor>(AUDIT_GLOBAL_ANCHOR_COLLECTION);
-
-const getFailureCollection = (db: Db): Collection<AuditFailureRecord> =>
-  db.collection<AuditFailureRecord>(AUDIT_FAILURES_COLLECTION);
-
 const loadGlobalTail = async (db: Db): Promise<GlobalTail> => {
-  const latestLog = await getLogsCollection(db).findOne({}, { sort: { _sequence: -1 } });
+  const latestLog = await getLogsCollection<AuditLog>(db).findOne({}, { sort: { _sequence: -1 } });
   const sequence = latestLog?._sequence ?? 0;
   const hash = latestLog?._hash ?? '';
-  await getStateCollection(db).findOneAndUpdate(
+  await getStateCollection<AuditStateDocument>(db).findOneAndUpdate(
     { _id: AUDIT_STATE_ID },
     {
       $max: { value: sequence, global_last_sequence: sequence },
@@ -254,7 +248,7 @@ const loadGlobalTail = async (db: Db): Promise<GlobalTail> => {
 
 const loadPartitionTails = async (db: Db): Promise<Map<number, PartitionTail>> => {
   const tails = new Map<number, PartitionTail>();
-  const rows = await getPartitionStateCollection(db).find({}).toArray();
+  const rows = await getPartitionStateCollection<AuditPartitionState>(db).find({}).toArray();
   for (const row of rows) {
     tails.set(row.partition_id, {
       sequence: row.last_sequence,
@@ -274,7 +268,7 @@ const getOrLoadPartitionTail = async (
   }
 
   const id = `partition:${partitionId}`;
-  const row = await getPartitionStateCollection(db).findOne({ _id: id });
+  const row = await getPartitionStateCollection<AuditPartitionState>(db).findOne({ _id: id });
   if (!row) {
     const initial: PartitionTail = { sequence: 0, hash: '' };
     runtime.partitionTails.set(partitionId, initial);
@@ -292,7 +286,7 @@ const collectBacklogCount = async (
   db: Db,
   session: DbSession | undefined,
 ): Promise<number> => {
-  const count = await getIntentsCollection(db).countDocuments(
+  const count = await getIntentsCollection<AuditIntent>(db).countDocuments(
     {
       status: { $in: ACTIVE_BACKLOG_STATUSES },
     },
@@ -336,7 +330,7 @@ const markIntentAsTerminalFailure = async (
   reason: string,
   session: DbSession | undefined,
 ): Promise<void> => {
-  const updateResult = await getIntentsCollection(db).updateOne(
+  const updateResult = await getIntentsCollection<AuditIntent>(db).updateOne(
     { event_id: intent.event_id },
     {
       $set: {
@@ -355,7 +349,7 @@ const markIntentAsTerminalFailure = async (
   ) {
     adjustRuntimeBacklog(-1);
   }
-  await getFailureCollection(db).insertOne(
+  await getFailureCollection<AuditFailureRecord>(db).insertOne(
     toFailureRecord(intent, reason),
     toSessionOption(session),
   );
@@ -366,7 +360,7 @@ const markIntentForRetry = async (
   intent: AuditIntent,
   reason: string,
 ): Promise<void> => {
-  const collection = getIntentsCollection(db);
+  const collection = getIntentsCollection<AuditIntent>(db);
   const attempts = intent.attempt_count + 1;
   if (attempts >= runtime.options.maxRetryAttempts) {
     await markIntentAsTerminalFailure(db, intent, reason, undefined);
@@ -511,10 +505,10 @@ const commitBatch = async (
   }
 
   await runInTransaction(db, async (session) => {
-    const logs = getLogsCollection(db);
-    const intents = getIntentsCollection(db);
-    const partitions = getPartitionStateCollection(db);
-    const state = getStateCollection(db);
+    const logs = getLogsCollection<AuditLog>(db);
+    const intents = getIntentsCollection<AuditIntent>(db);
+    const partitions = getPartitionStateCollection<AuditPartitionState>(db);
+    const state = getStateCollection<AuditStateDocument>(db);
     const now = new Date();
 
     /**
@@ -702,7 +696,7 @@ const commitBatch = async (
 const claimPendingIntents = async (
   db: Db,
 ): Promise<AuditIntent[]> => {
-  const collection = getIntentsCollection(db);
+  const collection = getIntentsCollection<AuditIntent>(db);
   const now = new Date();
   const leaseUntil = new Date(now.getTime() + runtime.options.leaseDurationMs);
 
@@ -785,7 +779,7 @@ const releaseClaimedIntentsAfterFlushFailure = async (
   isConflict: boolean,
   errorMessage: string,
 ): Promise<void> => {
-  const claimed = await getIntentsCollection(db)
+  const claimed = await getIntentsCollection<AuditIntent>(db)
     .find({
       status: 'processing',
       lease_owner: runtime.nodeId,
@@ -796,7 +790,7 @@ const releaseClaimedIntentsAfterFlushFailure = async (
 
   for (const intent of claimed) {
     if (isConflict) {
-      await getIntentsCollection(db).updateOne(
+      await getIntentsCollection<AuditIntent>(db).updateOne(
         { event_id: intent.event_id },
         {
           $set: {
@@ -874,7 +868,7 @@ const writeAnchor = async (
     return;
   }
 
-  const latestAnchor = await getAnchorCollection(db).findOne({}, { sort: { ts: -1 } });
+  const latestAnchor = await getAnchorCollection<AuditGlobalAnchor>(db).findOne({}, { sort: { ts: -1 } });
   const previousAnchorHash = latestAnchor?.anchor_hash ?? '';
   const payload = {
     partition_heads: heads,
@@ -883,7 +877,7 @@ const writeAnchor = async (
   const anchorHash = createHash('sha256')
     .update(stableStringifyUnknown(payload))
     .digest('hex');
-  await getAnchorCollection(db).insertOne({
+  await getAnchorCollection<AuditGlobalAnchor>(db).insertOne({
     anchor_id: randomUUID(),
     ts: Date.now(),
     partition_heads: heads,
@@ -1001,7 +995,7 @@ export const enqueueAuditIntent = async (
 
   let inserted = false;
   try {
-    await getIntentsCollection(db).insertOne(intent, toSessionOption(options.session));
+    await getIntentsCollection<AuditIntent>(db).insertOne(intent, toSessionOption(options.session));
     inserted = true;
   } catch (error) {
     if (!isDuplicateKeyError(error)) {
