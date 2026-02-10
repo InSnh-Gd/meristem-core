@@ -186,6 +186,46 @@ const resolveIncomingHardwareProfileHash = async (
 const toSessionOption = (session: DbSession | undefined): { session?: ClientSession } =>
   session ? { session } : {};
 
+const readConnectionStatus = (node: NodeDocument): string | null => {
+  const status = (node as NodeDocument & { status?: { connection_status?: unknown } }).status;
+  const connectionStatus = status?.connection_status;
+  return typeof connectionStatus === 'string' ? connectionStatus : null;
+};
+
+const shouldElideExistingNodeWrite = (
+  existingNode: NodeDocument,
+  input: {
+    hostname: string;
+    persona: Persona;
+    orgId: string;
+    incomingHardwareProfile?: NodeHardwareProfile;
+    incomingHash?: string;
+  },
+): boolean => {
+  if (input.incomingHardwareProfile) {
+    return false;
+  }
+
+  const baselineHash = existingNode.hardware_profile_hash;
+  if (input.incomingHash) {
+    if (!baselineHash || baselineHash !== input.incomingHash) {
+      return false;
+    }
+  }
+
+  const connectionStatus = readConnectionStatus(existingNode);
+  if (connectionStatus !== 'online') {
+    return false;
+  }
+
+  const existingOrgId = existingNode.org_id || DEFAULT_ORG_ID;
+  return (
+    existingNode.hostname === input.hostname &&
+    existingNode.persona === input.persona &&
+    existingOrgId === input.orgId
+  );
+};
+
 /**
  * 纯函数：生成 HWID（硬件唯一指纹）
  * 基于 docs/standards/HARDWARE_PROTOCOL.md §2 HWID 生成规范
@@ -386,6 +426,9 @@ export const joinRoute = (
         const existingNode = await recoverNode(db, hwid, session, {
           node_id: 1,
           org_id: 1,
+          hostname: 1,
+          persona: 1,
+          status: 1,
           hardware_profile_hash: 1,
         });
 
@@ -447,30 +490,44 @@ export const joinRoute = (
               ...auditMeta,
               status,
             };
+            /**
+             * 逻辑块：existing join 在“状态已一致”时跳过节点文档写入。
+             * 目标是缩短事务临界区并降低同 HWID 热点写冲突；只要在线状态、身份字段与组织字段未变，
+             * 就不再重复写相同值，仍保持审计事件入队与响应语义不变。
+             */
+            const canElideWrite = shouldElideExistingNodeWrite(existingNode, {
+              hostname,
+              persona,
+              orgId: incomingOrgId,
+              incomingHardwareProfile,
+              incomingHash,
+            });
 
-            await db
-              .collection<NodeDocument>(NODES_COLLECTION)
-              .updateOne(
-                { node_id },
-                {
-                  $set: {
-                    hostname,
-                    persona,
-                    org_id: existingNode.org_id || incomingOrgId,
-                    ...(incomingHardwareProfile ? { hardware_profile: incomingHardwareProfile } : {}),
-                    ...(incomingHash ? { hardware_profile_hash: incomingHash } : {}),
-                    hardware_profile_drift: {
-                      detected: false,
-                      baseline_hash: nextBaselineHash,
-                      incoming_hash: incomingHash,
+            if (!canElideWrite) {
+              await db
+                .collection<NodeDocument>(NODES_COLLECTION)
+                .updateOne(
+                  { node_id },
+                  {
+                    $set: {
+                      hostname,
+                      persona,
+                      org_id: existingNode.org_id || incomingOrgId,
+                      ...(incomingHardwareProfile ? { hardware_profile: incomingHardwareProfile } : {}),
+                      ...(incomingHash ? { hardware_profile_hash: incomingHash } : {}),
+                      hardware_profile_drift: {
+                        detected: false,
+                        baseline_hash: nextBaselineHash,
+                        incoming_hash: incomingHash,
+                      },
+                      'status.online': true,
+                      'status.connection_status': 'online',
+                      'status.last_seen': now,
                     },
-                    'status.online': true,
-                    'status.connection_status': 'online',
-                    'status.last_seen': now,
                   },
-                },
-                toSessionOption(session),
-              );
+                  toSessionOption(session),
+                );
+            }
           }
         } else {
           const newNode = await createNode(db, hwid, persona, {
@@ -531,6 +588,14 @@ export const joinRoute = (
               error: 'AUDIT_BACKPRESSURE',
             };
           }
+          if (isDomainError(error) && error.code === 'TRANSACTION_ABORTED') {
+            set.status = 409;
+            set.headers['Retry-After'] = '1';
+            return {
+              success: false,
+              error: 'TRANSACTION_ABORTED',
+            };
+          }
           console.error('[Join] failed to persist join transaction', error);
           set.status = 500;
           return {
@@ -561,6 +626,10 @@ export const joinRoute = (
       response: {
         200: JoinResponseBodySchema,
         400: t.Object({
+          success: t.Boolean(),
+          error: t.String(),
+        }),
+        409: t.Object({
           success: t.Boolean(),
           error: t.String(),
         }),

@@ -250,6 +250,80 @@ test('joinRoute logs audit event for existing nodes', async (): Promise<void> =>
 
 });
 
+test('joinRoute elides existing-node update when payload is idempotent', async (): Promise<void> => {
+  const existingNodeHwid = 'i'.repeat(64);
+  const existingNode: NodeDocument = {
+    node_id: 'node-existing-idempotent',
+    org_id: 'org-default',
+    hwid: existingNodeHwid,
+    hostname: 'stable-host',
+    persona: 'AGENT',
+    role_flags: { is_relay: false, is_storage: false, is_compute: false },
+    network: { virtual_ip: '10.25.10.3', mode: 'DIRECT', v: 0 },
+    inventory: { cpu_model: 'c', cores: 2, ram_total: 4, os: 'linux', arch: 'x86_64' },
+    status: {
+      online: true,
+      connection_status: 'online',
+      last_seen: new Date(),
+      cpu_usage: 0,
+      ram_free: 2,
+      gpu_info: [],
+    },
+    created_at: new Date(),
+  };
+
+  let updateCalls = 0;
+  const nodeCollection = {
+    findOne: async (query?: Record<string, unknown>): Promise<NodeDocument | null> => {
+      if (query?.hwid === existingNode.hwid) {
+        return existingNode;
+      }
+      return null;
+    },
+    insertOne: async (): Promise<{ insertedId: string }> => ({ insertedId: 'should-not-be-used' }),
+    updateOne: async (): Promise<{ modifiedCount: number }> => {
+      updateCalls += 1;
+      return { modifiedCount: 1 };
+    },
+  };
+
+  const mockDb = {
+    collection: (_name: string): Collection<NodeDocument> => {
+      return nodeCollection as unknown as Collection<NodeDocument>;
+    },
+  };
+
+  const auditLogger = async (_innerDb: Db, event: AuditEventInput): Promise<AuditLog> => ({
+    ...event,
+    _sequence: 3,
+    _hash: 'hash-idempotent',
+    _previous_hash: '',
+  });
+
+  const app = new Elysia();
+  joinRoute(app, mockDb as Db, auditLogger);
+
+  const response = await app.handle(
+    new Request('http://localhost/api/v1/join', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        hwid: existingNodeHwid,
+        hostname: 'stable-host',
+        persona: 'AGENT',
+      }),
+    }),
+  );
+
+  const payload = await response.json();
+  expect(response.status).toBe(200);
+  expect(payload.success).toBe(true);
+  expect(payload.data.status).toBe('existing');
+  expect(updateCalls).toBe(0);
+});
+
 test('joinRoute responds without waiting for audit persistence', async (): Promise<void> => {
   const recordedNodes: NodeDocument[] = [];
   const mockDb = {

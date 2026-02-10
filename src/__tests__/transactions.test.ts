@@ -137,3 +137,75 @@ test('runInTransaction fails fast when transactions are unsupported', async (): 
   expect(withTransactionCalls).toBe(1);
   expect(workCalls).toBe(0);
 });
+
+test('runInTransaction retries transient transaction errors before succeeding', async (): Promise<void> => {
+  let withTransactionCalls = 0;
+  let workCalls = 0;
+
+  const transientError = createLabeledError(
+    'Write conflict during plan execution',
+    'TransientTransactionError',
+  );
+
+  const db = {
+    client: {
+      startSession: () => ({
+        withTransaction: async (
+          work: () => Promise<void>,
+          _options?: unknown,
+        ): Promise<void> => {
+          withTransactionCalls += 1;
+          if (withTransactionCalls < 3) {
+            throw transientError;
+          }
+          await work();
+        },
+        endSession: async (): Promise<void> => {},
+      }),
+    },
+  } as unknown as Db;
+
+  const result = await runInTransaction(db, async () => {
+    workCalls += 1;
+    return 'ok';
+  });
+
+  expect(result).toBe('ok');
+  expect(withTransactionCalls).toBe(3);
+  expect(workCalls).toBe(1);
+});
+
+test('runInTransaction fails after transient transaction retries are exhausted', async (): Promise<void> => {
+  let withTransactionCalls = 0;
+  let workCalls = 0;
+
+  const transientError = createLabeledError(
+    'Write conflict during plan execution',
+    'TransientTransactionError',
+  );
+
+  const db = {
+    client: {
+      startSession: () => ({
+        withTransaction: async (
+          _work: () => Promise<void>,
+          _options?: unknown,
+        ): Promise<void> => {
+          withTransactionCalls += 1;
+          throw transientError;
+        },
+        endSession: async (): Promise<void> => {},
+      }),
+    },
+  } as unknown as Db;
+
+  await expect(runInTransaction(db, async () => {
+    workCalls += 1;
+    return 'never';
+  })).rejects.toMatchObject({
+    code: 'TRANSACTION_ABORTED',
+  });
+
+  expect(withTransactionCalls).toBe(4);
+  expect(workCalls).toBe(0);
+});
