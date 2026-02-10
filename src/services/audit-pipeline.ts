@@ -774,6 +774,47 @@ const claimPendingIntents = async (
   return claimed;
 };
 
+const refreshRuntimeTailsFromDb = async (db: Db): Promise<void> => {
+  runtime.globalTail = await loadGlobalTail(db);
+  runtime.partitionTails = await loadPartitionTails(db);
+  runtime.backlogCount = await collectBacklogCount(db, undefined);
+};
+
+const releaseClaimedIntentsAfterFlushFailure = async (
+  db: Db,
+  isConflict: boolean,
+  errorMessage: string,
+): Promise<void> => {
+  const claimed = await getIntentsCollection(db)
+    .find({
+      status: 'processing',
+      lease_owner: runtime.nodeId,
+    })
+    .sort({ created_at: 1, event_id: 1 })
+    .limit(runtime.options.batchSize)
+    .toArray();
+
+  for (const intent of claimed) {
+    if (isConflict) {
+      await getIntentsCollection(db).updateOne(
+        { event_id: intent.event_id },
+        {
+          $set: {
+            status: 'pending',
+            updated_at: new Date(),
+            error_last: errorMessage,
+            lease_owner: null,
+            lease_until: null,
+          },
+        },
+      );
+      continue;
+    }
+
+    await markIntentForRetry(db, intent, errorMessage);
+  }
+};
+
 const drainPendingIntents = async (
   db: Db,
   traceContext: TraceContext,
@@ -806,37 +847,10 @@ const drainPendingIntents = async (
        * 逻辑块：多写竞争导致 tail 冲突时，先回源刷新影子 tail，再释放本轮 lease。
        * 这类冲突属于并发竞争而非数据损坏，不应累计 attempt_count，避免误判为 terminal failure。
        */
-      runtime.globalTail = await loadGlobalTail(db);
-      runtime.partitionTails = await loadPartitionTails(db);
-      runtime.backlogCount = await collectBacklogCount(db, undefined);
+      await refreshRuntimeTailsFromDb(db);
     }
-    const claimed = await getIntentsCollection(db)
-      .find({
-        status: 'processing',
-        lease_owner: runtime.nodeId,
-      })
-      .sort({ created_at: 1, event_id: 1 })
-      .limit(runtime.options.batchSize)
-      .toArray();
-    for (const intent of claimed) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (isConflict) {
-        await getIntentsCollection(db).updateOne(
-          { event_id: intent.event_id },
-          {
-            $set: {
-              status: 'pending',
-              updated_at: new Date(),
-              error_last: message,
-              lease_owner: null,
-              lease_until: null,
-            },
-          },
-        );
-      } else {
-        await markIntentForRetry(db, intent, message);
-      }
-    }
+    const message = error instanceof Error ? error.message : String(error);
+    await releaseClaimedIntentsAfterFlushFailure(db, isConflict, message);
   } finally {
     runtime.flushing = false;
   }
