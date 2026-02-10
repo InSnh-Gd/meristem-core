@@ -18,7 +18,7 @@
     "jwt:run:prune": "bun run src/cli/jwt-rotate.ts prune"
   },
   "dependencies": {
-    "@insnh-gd/meristem-shared": "file:../meristem-shared",
+    "@insnh-gd/meristem-shared": "npm:@jsr/insnh-gd__meristem-shared@^0.1.0",
     "@elysiajs/jwt": "^1.4.0",
     "@iarna/toml": "^2.2.5",
     "bcrypt": "^6.0.0",
