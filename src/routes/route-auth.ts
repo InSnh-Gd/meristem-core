@@ -6,6 +6,10 @@ type ResponseSetter = {
 };
 
 export type AuthorizationErrorResponse = RouteErrorResponse;
+export type SuperadminGuardContext = {
+  store: Record<string, unknown>;
+  set: ResponseSetter;
+};
 
 export const ensureSuperadminAccess = (
   store: Record<string, unknown>,
@@ -21,4 +25,13 @@ export const ensureSuperadminAccess = (
   }
 
   return null;
+};
+
+export const requireSuperadmin = (
+  context: SuperadminGuardContext,
+): AuthorizationErrorResponse | void => {
+  const denied = ensureSuperadminAccess(context.store, context.set);
+  if (denied) {
+    return denied;
+  }
 };

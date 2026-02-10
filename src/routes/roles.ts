@@ -11,7 +11,7 @@ import {
   type UpdateRoleInput,
   updateRole,
 } from '../services/role';
-import { ensureSuperadminAccess } from './route-auth';
+import { requireSuperadmin } from './route-auth';
 import { respondWithCode, respondWithError } from './route-errors';
 
 const GenericErrorSchema = t.Object({
@@ -72,23 +72,6 @@ const GenericSuccessSchema = t.Object({
   success: t.Literal(true),
 });
 
-type SuperadminGuardContext = {
-  store: Record<string, unknown>;
-  set: {
-    status?: unknown;
-  };
-};
-
-const requireSuperadminAccess = (
-  context: SuperadminGuardContext,
-) => {
-  const denied = ensureSuperadminAccess(context.store, context.set);
-  if (denied) {
-    return denied;
-  }
-  return;
-};
-
 const toRoleView = (role: {
   role_id: string;
   name: string;
@@ -137,7 +120,7 @@ export const rolesRoute = (app: Elysia, db: Db): Elysia => {
         403: GenericErrorSchema,
         500: GenericErrorSchema,
       },
-      beforeHandle: [requireAuth, requireSuperadminAccess],
+      beforeHandle: [requireAuth, requireSuperadmin],
     },
   );
 
@@ -161,7 +144,7 @@ export const rolesRoute = (app: Elysia, db: Db): Elysia => {
         404: GenericErrorSchema,
         500: GenericErrorSchema,
       },
-      beforeHandle: [requireAuth, requireSuperadminAccess],
+      beforeHandle: [requireAuth, requireSuperadmin],
     },
   );
 
@@ -193,7 +176,7 @@ export const rolesRoute = (app: Elysia, db: Db): Elysia => {
         409: GenericErrorSchema,
         500: GenericErrorSchema,
       },
-      beforeHandle: [requireAuth, requireSuperadminAccess],
+      beforeHandle: [requireAuth, requireSuperadmin],
     },
   );
 
@@ -229,7 +212,7 @@ export const rolesRoute = (app: Elysia, db: Db): Elysia => {
         409: GenericErrorSchema,
         500: GenericErrorSchema,
       },
-      beforeHandle: [requireAuth, requireSuperadminAccess],
+      beforeHandle: [requireAuth, requireSuperadmin],
     },
   );
 
@@ -257,7 +240,7 @@ export const rolesRoute = (app: Elysia, db: Db): Elysia => {
         404: GenericErrorSchema,
         500: GenericErrorSchema,
       },
-      beforeHandle: [requireAuth, requireSuperadminAccess],
+      beforeHandle: [requireAuth, requireSuperadmin],
     },
   );
 

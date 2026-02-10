@@ -5,7 +5,7 @@ import { requireAuth, type AuthStore } from '../middleware/auth';
 import { DEFAULT_ORG_ID } from '../services/bootstrap';
 import { createInvitation, acceptInvitation } from '../services/invitation';
 import { ensureRolesBelongToOrg } from '../services/role';
-import { ensureSuperadminAccess } from './route-auth';
+import { requireSuperadmin } from './route-auth';
 import { respondWithCode, respondWithError } from './route-errors';
 import {
   assignRoleToUser,
@@ -111,12 +111,7 @@ const RoleAssignResponseSchema = t.Object({
 export const usersRoute = (app: Elysia, db: Db): Elysia => {
   app.get(
     '/api/v1/users',
-    async ({ query, set, store }) => {
-      const denied = ensureSuperadminAccess(store, set);
-      if (denied) {
-        return denied;
-      }
-
+    async ({ query, set }) => {
       try {
         const { data, page_info } = await listUsers(db, {
           orgId: query.org_id,
@@ -142,18 +137,13 @@ export const usersRoute = (app: Elysia, db: Db): Elysia => {
         403: GenericErrorSchema,
         500: GenericErrorSchema,
       },
-      beforeHandle: [requireAuth],
+      beforeHandle: [requireAuth, requireSuperadmin],
     },
   );
 
   app.get(
     '/api/v1/users/:id',
-    async ({ params, set, store }) => {
-      const denied = ensureSuperadminAccess(store, set);
-      if (denied) {
-        return denied;
-      }
-
+    async ({ params, set }) => {
       const user = await getUserById(db, params.id);
       if (!user) {
         return respondWithCode(set, 'NOT_FOUND');
@@ -171,18 +161,13 @@ export const usersRoute = (app: Elysia, db: Db): Elysia => {
         403: GenericErrorSchema,
         404: GenericErrorSchema,
       },
-      beforeHandle: [requireAuth],
+      beforeHandle: [requireAuth, requireSuperadmin],
     },
   );
 
   app.post(
     '/api/v1/users',
-    async ({ body, set, store }) => {
-      const denied = ensureSuperadminAccess(store, set);
-      if (denied) {
-        return denied;
-      }
-
+    async ({ body, set }) => {
       const orgId = body.org_id ?? DEFAULT_ORG_ID;
       const roleIds = body.role_ids ?? [];
       try {
@@ -211,18 +196,13 @@ export const usersRoute = (app: Elysia, db: Db): Elysia => {
         409: GenericErrorSchema,
         500: GenericErrorSchema,
       },
-      beforeHandle: [requireAuth],
+      beforeHandle: [requireAuth, requireSuperadmin],
     },
   );
 
   app.patch(
     '/api/v1/users/:id',
-    async ({ params, body, set, store }) => {
-      const denied = ensureSuperadminAccess(store, set);
-      if (denied) {
-        return denied;
-      }
-
+    async ({ params, body, set }) => {
       try {
         const user = await updateUser(db, params.id, {
           username: body.username,
@@ -250,18 +230,13 @@ export const usersRoute = (app: Elysia, db: Db): Elysia => {
         409: GenericErrorSchema,
         500: GenericErrorSchema,
       },
-      beforeHandle: [requireAuth],
+      beforeHandle: [requireAuth, requireSuperadmin],
     },
   );
 
   app.delete(
     '/api/v1/users/:id',
-    async ({ params, set, store }) => {
-      const denied = ensureSuperadminAccess(store, set);
-      if (denied) {
-        return denied;
-      }
-
+    async ({ params, set }) => {
       const removed = await deleteUser(db, params.id);
       if (!removed) {
         return respondWithCode(set, 'NOT_FOUND');
@@ -276,18 +251,13 @@ export const usersRoute = (app: Elysia, db: Db): Elysia => {
         404: GenericErrorSchema,
         500: GenericErrorSchema,
       },
-      beforeHandle: [requireAuth],
+      beforeHandle: [requireAuth, requireSuperadmin],
     },
   );
 
   app.post(
     '/api/v1/users/invitations',
     async ({ body, set, store }) => {
-      const denied = ensureSuperadminAccess(store, set);
-      if (denied) {
-        return denied;
-      }
-
       const authStore = store as AuthStore;
       const orgId = body.org_id ?? DEFAULT_ORG_ID;
       const roleIds = body.role_ids ?? [];
@@ -321,7 +291,7 @@ export const usersRoute = (app: Elysia, db: Db): Elysia => {
         403: GenericErrorSchema,
         500: GenericErrorSchema,
       },
-      beforeHandle: [requireAuth],
+      beforeHandle: [requireAuth, requireSuperadmin],
     },
   );
 
@@ -357,12 +327,7 @@ export const usersRoute = (app: Elysia, db: Db): Elysia => {
 
   app.post(
     '/api/v1/users/:id/roles',
-    async ({ params, body, set, store }) => {
-      const denied = ensureSuperadminAccess(store, set);
-      if (denied) {
-        return denied;
-      }
-
+    async ({ params, body, set }) => {
       try {
         const user = await assignRoleToUser(db, params.id, body.role_id);
         if (!user) {
@@ -386,18 +351,13 @@ export const usersRoute = (app: Elysia, db: Db): Elysia => {
         404: GenericErrorSchema,
         500: GenericErrorSchema,
       },
-      beforeHandle: [requireAuth],
+      beforeHandle: [requireAuth, requireSuperadmin],
     },
   );
 
   app.delete(
     '/api/v1/users/:id/roles/:roleId',
-    async ({ params, set, store }) => {
-      const denied = ensureSuperadminAccess(store, set);
-      if (denied) {
-        return denied;
-      }
-
+    async ({ params, set }) => {
       const user = await removeRoleFromUser(db, params.id, params.roleId);
       if (!user) {
         return respondWithCode(set, 'NOT_FOUND');
@@ -415,7 +375,7 @@ export const usersRoute = (app: Elysia, db: Db): Elysia => {
         404: GenericErrorSchema,
         500: GenericErrorSchema,
       },
-      beforeHandle: [requireAuth],
+      beforeHandle: [requireAuth, requireSuperadmin],
     },
   );
 
