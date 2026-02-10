@@ -7,6 +7,7 @@ import { extractTraceId, generateTraceId } from '../utils/trace-context';
 import { validateCallDepthFromHeaders } from '../utils/call-depth';
 import { DomainError } from '../errors/domain-error';
 import { respondWithCode, respondWithError } from './route-errors';
+import { recordInvalidCallDepthRejection } from './route-audit';
 import { runInTransaction } from '../db/transactions';
 import { isDomainError } from '../errors/domain-error';
 import { isAuditPipelineReady, recordAuditEvent } from '../services/audit-pipeline';
@@ -51,24 +52,16 @@ export const resultsRoute = (app: Elysia, db: Db): Elysia => {
       const traceId = extractTraceId(request.headers) ?? generateTraceId();
       const callDepth = validateCallDepthFromHeaders(request.headers);
       if (!callDepth.ok) {
-        const invalidDepthAudit: AuditEventInput = {
-          ts: Date.now(),
-          level: 'WARN',
-          node_id: 'core',
+        await recordInvalidCallDepthRejection({
+          db,
+          routeTag: 'results',
           source: 'results',
-          trace_id: traceId,
+          nodeId: 'core',
+          traceId,
+          reason: callDepth.reason,
+          rawCallDepth: callDepth.raw ?? '',
           content: 'Rejected result request due to invalid call_depth',
-          meta: {
-            reason: callDepth.reason,
-            raw_call_depth: callDepth.raw ?? '',
-          },
-        };
-
-        try {
-          await recordAuditEvent(db, invalidDepthAudit, { routeTag: 'results' });
-        } catch (auditError) {
-          console.error('[Audit] failed to log invalid call_depth rejection', auditError);
-        }
+        });
 
         return respondWithCode(set, 'INVALID_CALL_DEPTH');
       }

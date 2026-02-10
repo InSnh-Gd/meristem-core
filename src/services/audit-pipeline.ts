@@ -1,10 +1,23 @@
-import { createHash, createHmac, randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import type { ClientSession, Collection, Db } from 'mongodb';
 import { DomainError } from '../errors/domain-error';
 import type { DbSession } from '../db/transactions';
 import { runInTransaction } from '../db/transactions';
 import { createLogger, type Logger } from '../utils/logger';
 import type { TraceContext } from '../utils/trace-context';
+import {
+  calculatePartitionHash,
+  calculatePartitionId,
+  calculatePayloadDigest,
+  calculatePayloadHmac,
+  stableStringifyUnknown,
+} from './audit-pipeline-hash';
+import {
+  DEFAULT_OPTIONS,
+  normalizeOptions,
+  type AuditPipelineOptions,
+  type AuditPipelineStartOptions,
+} from './audit-pipeline-options';
 import {
   AUDIT_COLLECTION,
   AUDIT_STATE_COLLECTION,
@@ -98,34 +111,6 @@ type RecordAuditOptions = {
   session?: DbSession;
 };
 
-type AuditPipelineStartOptions = {
-  enableBackgroundLoops?: boolean;
-  partitionCount?: number;
-  batchSize?: number;
-  flushIntervalMs?: number;
-  anchorIntervalMs?: number;
-  backlogSoftLimit?: number;
-  backlogHardLimit?: number;
-  leaseDurationMs?: number;
-  maxRetryAttempts?: number;
-  hmacSecret?: string;
-  hmacKeyId?: string;
-};
-
-type AuditPipelineOptions = {
-  enableBackgroundLoops: boolean;
-  partitionCount: number;
-  batchSize: number;
-  flushIntervalMs: number;
-  anchorIntervalMs: number;
-  backlogSoftLimit: number;
-  backlogHardLimit: number;
-  leaseDurationMs: number;
-  maxRetryAttempts: number;
-  hmacSecret: string;
-  hmacKeyId: string;
-};
-
 type GlobalTail = {
   sequence: number;
   hash: string;
@@ -167,20 +152,6 @@ type PipelineRuntime = {
   backlogCount: number;
 };
 
-const DEFAULT_OPTIONS: AuditPipelineOptions = {
-  enableBackgroundLoops: true,
-  partitionCount: 16,
-  batchSize: 32,
-  flushIntervalMs: 20,
-  anchorIntervalMs: 1_000,
-  backlogSoftLimit: 3_000,
-  backlogHardLimit: 8_000,
-  leaseDurationMs: 10_000,
-  maxRetryAttempts: 5,
-  hmacSecret: process.env.MERISTEM_AUDIT_HMAC_SECRET ?? 'meristem-audit-default-secret',
-  hmacKeyId: process.env.MERISTEM_AUDIT_HMAC_KEY_ID ?? 'audit-hmac-v1',
-};
-
 const runtime: PipelineRuntime = {
   ready: false,
   flushing: false,
@@ -207,25 +178,6 @@ const ACTIVE_BACKLOG_STATUSES: readonly AuditIntentStatus[] = [
 
 const toSessionOption = (session: DbSession | undefined): { session?: ClientSession } =>
   session ? { session } : {};
-
-const toPositiveInteger = (value: number, fallback: number): number =>
-  Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
-
-const normalizeOptions = (
-  options: AuditPipelineStartOptions = {},
-): AuditPipelineOptions => ({
-  enableBackgroundLoops: options.enableBackgroundLoops ?? DEFAULT_OPTIONS.enableBackgroundLoops,
-  partitionCount: toPositiveInteger(options.partitionCount ?? DEFAULT_OPTIONS.partitionCount, DEFAULT_OPTIONS.partitionCount),
-  batchSize: toPositiveInteger(options.batchSize ?? DEFAULT_OPTIONS.batchSize, DEFAULT_OPTIONS.batchSize),
-  flushIntervalMs: toPositiveInteger(options.flushIntervalMs ?? DEFAULT_OPTIONS.flushIntervalMs, DEFAULT_OPTIONS.flushIntervalMs),
-  anchorIntervalMs: toPositiveInteger(options.anchorIntervalMs ?? DEFAULT_OPTIONS.anchorIntervalMs, DEFAULT_OPTIONS.anchorIntervalMs),
-  backlogSoftLimit: toPositiveInteger(options.backlogSoftLimit ?? DEFAULT_OPTIONS.backlogSoftLimit, DEFAULT_OPTIONS.backlogSoftLimit),
-  backlogHardLimit: toPositiveInteger(options.backlogHardLimit ?? DEFAULT_OPTIONS.backlogHardLimit, DEFAULT_OPTIONS.backlogHardLimit),
-  leaseDurationMs: toPositiveInteger(options.leaseDurationMs ?? DEFAULT_OPTIONS.leaseDurationMs, DEFAULT_OPTIONS.leaseDurationMs),
-  maxRetryAttempts: toPositiveInteger(options.maxRetryAttempts ?? DEFAULT_OPTIONS.maxRetryAttempts, DEFAULT_OPTIONS.maxRetryAttempts),
-  hmacSecret: options.hmacSecret ?? DEFAULT_OPTIONS.hmacSecret,
-  hmacKeyId: options.hmacKeyId ?? DEFAULT_OPTIONS.hmacKeyId,
-});
 
 const isDuplicateKeyError = (error: unknown): boolean => {
   if (typeof error !== 'object' || error === null) {
@@ -254,63 +206,10 @@ const isDuplicateKeyOnlyBulkError = (error: unknown): boolean => {
   });
 };
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
 const AUDIT_LOG_WRITE_INCOMPLETE = 'AUDIT_LOG_WRITE_INCOMPLETE';
 const AUDIT_LOG_WRITE_MISMATCH = 'AUDIT_LOG_WRITE_MISMATCH';
 const AUDIT_GLOBAL_TAIL_CONFLICT = 'AUDIT_GLOBAL_TAIL_CONFLICT';
 const AUDIT_PARTITION_TAIL_CONFLICT = 'AUDIT_PARTITION_TAIL_CONFLICT';
-
-const canonicalizeValue = (value: unknown): unknown => {
-  if (Array.isArray(value)) {
-    return value.map((item) => canonicalizeValue(item));
-  }
-  if (isRecord(value)) {
-    const normalized: Record<string, unknown> = {};
-    for (const key of Object.keys(value).sort()) {
-      const candidate = value[key];
-      if (candidate !== undefined) {
-        normalized[key] = canonicalizeValue(candidate);
-      }
-    }
-    return normalized;
-  }
-  return value;
-};
-
-const stableStringifyUnknown = (value: unknown): string =>
-  JSON.stringify(canonicalizeValue(value));
-
-const calculatePayloadDigest = (payload: AuditEventInput): string =>
-  createHash('sha256').update(stableStringifyUnknown(payload)).digest('hex');
-
-const calculatePayloadHmac = (
-  digest: string,
-  secret: string,
-): string => createHmac('sha256', secret).update(digest).digest('hex');
-
-const calculatePartitionHash = (
-  payload: AuditEventInput,
-  partitionSequence: number,
-  partitionPreviousHash: string,
-): string => {
-  const input = {
-    ...payload,
-    partition_sequence: partitionSequence,
-    partition_previous_hash: partitionPreviousHash,
-  };
-  return createHash('sha256').update(stableStringifyUnknown(input)).digest('hex');
-};
-
-const calculatePartitionId = (
-  payload: AuditEventInput,
-  partitionCount: number,
-): number => {
-  const seed = `${payload.node_id}|${payload.trace_id}|${payload.source}`;
-  const digest = createHash('sha256').update(seed).digest();
-  return digest.readUInt32BE(0) % partitionCount;
-};
 
 const getIntentsCollection = (db: Db): Collection<AuditIntent> =>
   db.collection<AuditIntent>(AUDIT_INTENTS_COLLECTION);

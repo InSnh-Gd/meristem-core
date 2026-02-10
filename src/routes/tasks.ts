@@ -15,6 +15,7 @@ import { requireAuth, type AuthStore } from '../middleware/auth';
 import { DEFAULT_ORG_ID } from '../services/bootstrap';
 import { getUserById } from '../services/user';
 import { respondWithCode, respondWithError } from './route-errors';
+import { recordInvalidCallDepthRejection } from './route-audit';
 import { runInTransaction } from '../db/transactions';
 import { isDomainError } from '../errors/domain-error';
 import { isAuditPipelineReady, recordAuditEvent } from '../services/audit-pipeline';
@@ -202,24 +203,16 @@ export const tasksRoute = (app: Elysia, db: Db): Elysia => {
       }
       const callDepth = validateCallDepthFromHeaders(request.headers);
       if (!callDepth.ok) {
-        const invalidDepthAudit: AuditEventInput = {
-          ts: Date.now(),
-          level: 'WARN',
-          node_id: authStore.user.id,
+        await recordInvalidCallDepthRejection({
+          db,
+          routeTag: 'tasks',
           source: 'tasks',
-          trace_id: traceId,
+          nodeId: authStore.user.id,
+          traceId,
+          reason: callDepth.reason,
+          rawCallDepth: callDepth.raw ?? '',
           content: 'Rejected task request due to invalid call_depth',
-          meta: {
-            reason: callDepth.reason,
-            raw_call_depth: callDepth.raw ?? '',
-          },
-        };
-
-        try {
-          await recordAuditEvent(db, invalidDepthAudit, { routeTag: 'tasks' });
-        } catch (auditError) {
-          console.error('[Audit] failed to log invalid call_depth rejection', auditError);
-        }
+        });
 
         return respondWithCode(set, 'INVALID_CALL_DEPTH');
       }
