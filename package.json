@@ -6,13 +6,16 @@
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
     "build": "bun build src/index.ts --outdir dist --target bun",
-    "typecheck:stable": "tsc --noEmit -p tsconfig.json",
-    "typecheck:next": "bun run src/cli/typecheck-next.ts",
-    "runtime:check": "bun run src/cli/runtime-check.ts",
-    "benchmark:baseline": "bun run src/cli/benchmark-baseline.ts",
-    "test:integration": "NATS_URL=nats://localhost:4222 bun test --test-name-pattern '.*@integration.*'",
-    "jwt:rotate": "bun run src/cli/jwt-rotate.ts rotate",
-    "jwt:prune": "bun run src/cli/jwt-rotate.ts prune"
+    "typecheck:run:stable": "tsc --noEmit -p tsconfig.json",
+    "typecheck:run:next": "bun run src/cli/typecheck-next.ts",
+    "runtime:run:check": "bun run src/cli/runtime-check.ts",
+    "benchmark:run:baseline": "MERISTEM_WORKSPACE_ROOT=.. bun run ../meristem-tooling/src/cli.ts bench baseline",
+    "benchmark:run:pack": "MERISTEM_WORKSPACE_ROOT=.. bun run ../meristem-tooling/src/cli.ts bench pack",
+    "benchmark:run:pack:full": "MERISTEM_WORKSPACE_ROOT=.. bun run ../meristem-tooling/src/cli.ts bench pack --with-http --with-reliability",
+    "benchmark:run:http": "MERISTEM_WORKSPACE_ROOT=.. bun run ../meristem-tooling/src/cli.ts bench http-matrix --requests 400 --concurrency 40 --warmup 40 --timeout-ms 3000",
+    "test:run:integration:core": "MERISTEM_WORKSPACE_ROOT=.. NATS_URL=nats://localhost:4222 bun run ../meristem-tooling/src/cli.ts test integration-core",
+    "jwt:run:rotate": "bun run src/cli/jwt-rotate.ts rotate",
+    "jwt:run:prune": "bun run src/cli/jwt-rotate.ts prune"
   },
   "dependencies": {
     "@insnh-gd/meristem-shared": "file:../meristem-shared",
