@@ -3,18 +3,49 @@ import { Elysia } from 'elysia';
 import type { Collection, Db, Document } from 'mongodb';
 
 import { resultsRoute } from '../routes/results';
-import { AUDIT_COLLECTION, resetAuditState, type AuditLog } from '../services/audit';
+import {
+  AUDIT_COLLECTION,
+  AUDIT_STATE_COLLECTION,
+  resetAuditState,
+  type AuditLog,
+} from '../services/audit';
 
 type TestState = {
   audits: AuditLog[];
+  sequence: number;
 };
 
 const createMockDb = (state: TestState): Db => {
   const auditCollection = {
-    findOne: async (): Promise<AuditLog | null> => state.audits[state.audits.length - 1] ?? null,
+    findOne: async (query?: Record<string, unknown>): Promise<AuditLog | null> => {
+      const sequence = typeof query?._sequence === 'number' ? query._sequence : null;
+      if (sequence === null) {
+        return state.audits[state.audits.length - 1] ?? null;
+      }
+      return state.audits.find((log) => log._sequence === sequence) ?? null;
+    },
     insertOne: async (doc: AuditLog): Promise<{ insertedId: string }> => {
       state.audits.push(doc);
       return { insertedId: `${doc._sequence}` };
+    },
+  };
+
+  const auditStateCollection = {
+    findOne: async (): Promise<{ _id: string; value: number } | null> => {
+      if (state.sequence === 0) {
+        return null;
+      }
+      return { _id: 'global', value: state.sequence };
+    },
+    insertOne: async (): Promise<{ insertedId: string }> => {
+      if (state.sequence !== 0) {
+        throw { code: 11000 } as { code: number };
+      }
+      return { insertedId: 'global' };
+    },
+    findOneAndUpdate: async (): Promise<{ _id: string; value: number }> => {
+      state.sequence += 1;
+      return { _id: 'global', value: state.sequence };
     },
   };
 
@@ -22,6 +53,9 @@ const createMockDb = (state: TestState): Db => {
     collection: <TSchema extends Document>(name: string): Collection<TSchema> => {
       if (name === AUDIT_COLLECTION) {
         return auditCollection as unknown as Collection<TSchema>;
+      }
+      if (name === AUDIT_STATE_COLLECTION) {
+        return auditStateCollection as unknown as Collection<TSchema>;
       }
       throw new Error(`Unexpected collection: ${name}`);
     },
@@ -32,7 +66,7 @@ const createMockDb = (state: TestState): Db => {
 
 test('results route rejects invalid call depth header before processing result', async (): Promise<void> => {
   resetAuditState();
-  const state: TestState = { audits: [] };
+  const state: TestState = { audits: [], sequence: 0 };
   const db = createMockDb(state);
 
   const app = new Elysia();

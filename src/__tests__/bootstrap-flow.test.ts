@@ -7,7 +7,12 @@ import { ORGS_COLLECTION, ROLES_COLLECTION } from '../db/collections';
 import { authRoute } from '../routes/auth';
 import { bootstrapRoute } from '../routes/bootstrap';
 import { tasksRoute } from '../routes/tasks';
-import { AUDIT_COLLECTION, resetAuditState, type AuditLog } from '../services/audit';
+import {
+  AUDIT_COLLECTION,
+  AUDIT_STATE_COLLECTION,
+  resetAuditState,
+  type AuditLog,
+} from '../services/audit';
 
 type TestState = {
   users: UserDocument[];
@@ -15,6 +20,7 @@ type TestState = {
   orgs: OrgDocument[];
   tasks: TaskDocument[];
   audits: AuditLog[];
+  sequence: number;
 };
 
 const USERS_COLLECTION = 'users';
@@ -51,10 +57,35 @@ const createMockDb = (state: TestState): Db => {
   };
 
   const auditCollection = {
-    findOne: async (): Promise<AuditLog | null> => state.audits[state.audits.length - 1] ?? null,
+    findOne: async (query?: Record<string, unknown>): Promise<AuditLog | null> => {
+      const sequence = typeof query?._sequence === 'number' ? query._sequence : null;
+      if (sequence === null) {
+        return state.audits[state.audits.length - 1] ?? null;
+      }
+      return state.audits.find((log) => log._sequence === sequence) ?? null;
+    },
     insertOne: async (doc: AuditLog): Promise<{ insertedId: string }> => {
       state.audits.push(doc);
       return { insertedId: `${doc._sequence}` };
+    },
+  };
+
+  const auditStateCollection = {
+    findOne: async (): Promise<{ _id: string; value: number } | null> => {
+      if (state.sequence === 0) {
+        return null;
+      }
+      return { _id: 'global', value: state.sequence };
+    },
+    insertOne: async (): Promise<{ insertedId: string }> => {
+      if (state.sequence !== 0) {
+        throw { code: 11000 } as { code: number };
+      }
+      return { insertedId: 'global' };
+    },
+    findOneAndUpdate: async (): Promise<{ _id: string; value: number }> => {
+      state.sequence += 1;
+      return { _id: 'global', value: state.sequence };
     },
   };
 
@@ -123,6 +154,9 @@ const createMockDb = (state: TestState): Db => {
       }
       if (name === AUDIT_COLLECTION) {
         return auditCollection as unknown as Collection<TSchema>;
+      }
+      if (name === AUDIT_STATE_COLLECTION) {
+        return auditStateCollection as unknown as Collection<TSchema>;
       }
       throw new Error(`Unexpected collection: ${name}`);
     },
@@ -209,7 +243,7 @@ afterEach((): void => {
 });
 
 test('fresh db bootstrap -> login -> protected task creation succeeds', async (): Promise<void> => {
-  const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [] };
+  const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [], sequence: 0 };
   const db = createMockDb(state);
   const app = buildApp(db);
 
@@ -235,7 +269,7 @@ test('fresh db bootstrap -> login -> protected task creation succeeds', async ()
 }, 20_000);
 
 test('bootstrap creates user with org scope and role bindings', async (): Promise<void> => {
-  const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [] };
+  const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [], sequence: 0 };
   const db = createMockDb(state);
   const app = buildApp(db);
 
@@ -251,7 +285,7 @@ test('bootstrap creates user with org scope and role bindings', async (): Promis
 }, 20_000);
 
 test('second bootstrap attempt is rejected after first user exists', async (): Promise<void> => {
-  const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [] };
+  const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [], sequence: 0 };
   const db = createMockDb(state);
   const app = buildApp(db);
 
@@ -269,7 +303,7 @@ test('second bootstrap attempt is rejected after first user exists', async (): P
 }, 20_000);
 
 test('login fails on fresh database before bootstrap', async (): Promise<void> => {
-  const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [] };
+  const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [], sequence: 0 };
   const db = createMockDb(state);
   const app = buildApp(db);
 
@@ -283,7 +317,7 @@ test('login fails on fresh database before bootstrap', async (): Promise<void> =
 }, 20_000);
 
 test('login rejects wrong password after bootstrap', async (): Promise<void> => {
-  const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [] };
+  const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [], sequence: 0 };
   const db = createMockDb(state);
   const app = buildApp(db);
 
@@ -300,7 +334,7 @@ test('login rejects wrong password after bootstrap', async (): Promise<void> => 
 }, 20_000);
 
 test('protected task endpoint rejects missing authorization header', async (): Promise<void> => {
-  const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [] };
+  const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [], sequence: 0 };
   const db = createMockDb(state);
   const app = buildApp(db);
 
@@ -313,7 +347,7 @@ test('protected task endpoint rejects missing authorization header', async (): P
 }, 20_000);
 
 test('protected task endpoint rejects invalid call depth header', async (): Promise<void> => {
-  const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [] };
+  const state: TestState = { users: [], roles: [], orgs: [], tasks: [], audits: [], sequence: 0 };
   const db = createMockDb(state);
   const app = buildApp(db);
 

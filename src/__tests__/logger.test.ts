@@ -44,13 +44,13 @@ describe('Logger Factory', () => {
       expect(typeof logger.fatal).toBe('function');
     });
 
-    it('should be a pure function - same input produces same output', () => {
+    it('should reuse logger instance for identical trace context', () => {
       const logger1 = createLogger(traceContext);
       const logger2 = createLogger(traceContext);
 
       expect(typeof logger1.info).toBe('function');
       expect(typeof logger2.info).toBe('function');
-      expect(logger1.info).not.toBe(logger2.info);
+      expect(logger1.info).toBe(logger2.info);
     });
 
     it('should not modify the input TraceContext', () => {

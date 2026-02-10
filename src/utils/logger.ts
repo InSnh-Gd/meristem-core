@@ -15,6 +15,41 @@ const sharedNatsTransport = createNatsTransport({
   },
 });
 
+const PINO_BASE_OPTIONS = {
+  level: 'debug',
+  base: null,
+  timestamp: false,
+  formatters: {
+    level: () => ({}),
+    bindings: () => ({}),
+  },
+} as const;
+
+type LoggerMethod = 'debug' | 'info' | 'warn' | 'error' | 'fatal';
+
+const PINO_METHOD_TO_LEVEL: Readonly<Record<LoggerMethod, number>> = {
+  debug: 10,
+  info: 20,
+  warn: 30,
+  error: 40,
+  fatal: 50,
+} as const;
+
+const LOGGER_CACHE_MAX_SIZE = 512;
+
+/**
+ * 逻辑块：共享 stdout logger，避免每次 createLogger 都新建 transport/worker。
+ * 这样可以消除高频路径中的 ThreadStream 创建成本，同时保持日志仍然输出到 stdout。
+ */
+const sharedStdoutDestination = pino.destination({
+  dest: 1,
+  sync: false,
+});
+
+const sharedPinoLogger = pino(PINO_BASE_OPTIONS, sharedStdoutDestination);
+
+const loggerCache = new Map<string, Logger>();
+
 /**
  * Pino log level mapping to LOG_PROTOCOL levels
  */
@@ -93,6 +128,22 @@ const transformToEnvelope = (
   });
 };
 
+const buildLoggerCacheKey = (traceContext: TraceContext): string => {
+  const taskId = traceContext.taskId ?? '';
+  return `${traceContext.nodeId}|${traceContext.source}|${traceContext.traceId}|${taskId}`;
+};
+
+const cacheLogger = (key: string, logger: Logger): Logger => {
+  if (loggerCache.size >= LOGGER_CACHE_MAX_SIZE) {
+    const oldestKey = loggerCache.keys().next().value;
+    if (typeof oldestKey === 'string') {
+      loggerCache.delete(oldestKey);
+    }
+  }
+  loggerCache.set(key, logger);
+  return logger;
+};
+
 /**
  * Logger type - wraps Pino logger with envelope formatting
  */
@@ -127,66 +178,51 @@ export type Logger = Readonly<{
  * ```
  */
 export function createLogger(traceContext: TraceContext): Logger {
-  const transport = pino.transport({
-    target: 'pino/file',
-    options: {
-      destination: 1,
-      sync: false,
-    },
-  });
-
-  const pinoLogger = pino(
-    {
-      level: 'debug',
-      base: null,
-      timestamp: false,
-      formatters: {
-        level: () => ({}),
-        bindings: () => ({}),
-      },
-    },
-    transport,
-  );
+  const cached = loggerCache.get(buildLoggerCacheKey(traceContext));
+  if (cached) {
+    return cached;
+  }
 
   const createLogMethod =
-    (methodName: 'debug' | 'info' | 'warn' | 'error' | 'fatal') =>
+    (methodName: LoggerMethod) =>
     (message: string, meta: Record<string, unknown> = {}): void => {
       try {
-        const pinoLevelMap: Record<typeof methodName, number> = {
-          debug: 10,
-          info: 20,
-          warn: 30,
-          error: 40,
-          fatal: 50,
-        };
         const envelope = transformToEnvelope(traceContext, {
-          level: pinoLevelMap[methodName],
+          level: PINO_METHOD_TO_LEVEL[methodName],
           time: Date.now(),
           ...meta,
           msg: message,
         });
-        pinoLogger[methodName](envelope);
+        sharedPinoLogger[methodName](envelope);
 
-        void Promise.resolve()
-          .then(() => {
-            sharedNatsTransport.write(envelope);
-          })
-          .catch(() => {
-            // Silent failure; transport handles buffering and fallback.
-          });
+        /**
+         * 逻辑块：NATS 传输写入保持“失败不阻塞业务”语义。
+         * write 本身是内存缓冲写入，异常时仅吞掉错误并依赖 transport 的内部降级策略。
+         */
+        try {
+          sharedNatsTransport.write(envelope);
+        } catch {
+          // Silent failure; transport handles buffering and fallback.
+        }
       } catch (err: unknown) {
         const errorMessage = err instanceof Error ? err.message : String(err);
-        pinoLogger.error({ msg: 'Logger error:', error: errorMessage });
+        sharedPinoLogger.error({ msg: 'Logger error:', error: errorMessage });
       }
     };
 
-  return Object.freeze({
+  const logger = Object.freeze({
     debug: createLogMethod('debug'),
     info: createLogMethod('info'),
     warn: createLogMethod('warn'),
     error: createLogMethod('error'),
     fatal: createLogMethod('fatal'),
   });
+
+  /**
+   * 逻辑块：logger cache 只作为热路径复用优化。
+   * 采用固定上限 + FIFO 驱逐，避免 trace_id 高基数导致无界增长。
+   */
+  return cacheLogger(buildLoggerCacheKey(traceContext), logger);
 }
 
 /**
@@ -205,32 +241,14 @@ export function createLoggerWithTransport(
 ): Logger {
   const transport = pino.transport(transportOptions);
 
-  const pinoLogger = pino(
-    {
-      level: 'debug',
-      base: null,
-      timestamp: false,
-      formatters: {
-        level: () => ({}),
-        bindings: () => ({}),
-      },
-    },
-    transport,
-  );
+  const pinoLogger = pino(PINO_BASE_OPTIONS, transport);
 
   const createLogMethod =
-    (methodName: 'debug' | 'info' | 'warn' | 'error' | 'fatal') =>
+    (methodName: LoggerMethod) =>
     (message: string, meta: Record<string, unknown> = {}): void => {
       try {
-        const pinoLevelMap: Record<typeof methodName, number> = {
-          debug: 10,
-          info: 20,
-          warn: 30,
-          error: 40,
-          fatal: 50,
-        };
         const envelope = transformToEnvelope(traceContext, {
-          level: pinoLevelMap[methodName],
+          level: PINO_METHOD_TO_LEVEL[methodName],
           time: Date.now(),
           ...meta,
           msg: message,

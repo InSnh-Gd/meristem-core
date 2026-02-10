@@ -41,6 +41,7 @@ const allowToken = async (token: string): Promise<WsAuthContext | null> => {
 const createMockConnection = (
   id: string,
   token?: string,
+  queryOverrides: Record<string, unknown> = {},
 ): {
   connection: WsConnection;
   sent: string[];
@@ -52,10 +53,20 @@ const createMockConnection = (
   const connection: WsConnection = {
     id,
     data: {
-      query: token !== undefined ? { token } : {},
+      query:
+        token !== undefined
+          ? {
+              token,
+              ...queryOverrides,
+            }
+          : queryOverrides,
     },
-    send: (message: string): void => {
-      sent.push(message);
+    send: (message: string | Uint8Array): void => {
+      if (typeof message === 'string') {
+        sent.push(message);
+        return;
+      }
+      sent.push(new TextDecoder().decode(message));
     },
     close: (): void => {
       closeCalls += 1;
@@ -174,6 +185,89 @@ test('websocket manager rejects disallowed topic subscription', async (): Promis
     type: 'ERROR',
     code: 'INVALID_TOPIC',
   });
+});
+
+test('ws handlers auto-subscribe topic from query when eden ws is enabled', async (): Promise<void> => {
+  const manager = createWebSocketManager(allowToken);
+  let handlers: WsHandlers | null = null;
+
+  wsRoute(
+    {
+      ws: (_path: string, registeredHandlers: WsHandlers): void => {
+        handlers = registeredHandlers;
+      },
+    } as unknown as Elysia,
+    {
+      manager,
+      enableEdenSubscribe: true,
+      wsPath: '/ws-test',
+    },
+  );
+
+  expect(handlers).not.toBeNull();
+  if (!handlers) {
+    throw new Error('ws handlers should be registered');
+  }
+  const activeHandlers: WsHandlers = handlers;
+
+  const client = createMockConnection('eden-enabled', 'valid-eden', {
+    topic: 'task.eden.status',
+  });
+  activeHandlers.open(client.connection);
+  await Bun.sleep(0);
+
+  expect(JSON.parse(client.sent[0])).toMatchObject({
+    type: 'ACK',
+    action: 'CONNECTED',
+  });
+  expect(JSON.parse(client.sent[1])).toMatchObject({
+    type: 'ACK',
+    action: 'SUBSCRIBE',
+    topic: 'task.eden.status',
+  });
+
+  expect(manager.broadcast('task.eden.status', { state: 'running' })).toBe(1);
+  expect(JSON.parse(client.sent[2])).toMatchObject({
+    type: 'PUSH',
+    topic: 'task.eden.status',
+  });
+});
+
+test('ws handlers do not auto-subscribe topic when eden ws is disabled', async (): Promise<void> => {
+  const manager = createWebSocketManager(allowToken);
+  let handlers: WsHandlers | null = null;
+
+  wsRoute(
+    {
+      ws: (_path: string, registeredHandlers: WsHandlers): void => {
+        handlers = registeredHandlers;
+      },
+    } as unknown as Elysia,
+    {
+      manager,
+      enableEdenSubscribe: false,
+      wsPath: '/ws-test',
+    },
+  );
+
+  expect(handlers).not.toBeNull();
+  if (!handlers) {
+    throw new Error('ws handlers should be registered');
+  }
+  const activeHandlers: WsHandlers = handlers;
+
+  const client = createMockConnection('eden-disabled', 'valid-eden', {
+    topic: 'task.eden.status',
+  });
+  activeHandlers.open(client.connection);
+  await Bun.sleep(0);
+
+  expect(client.sent).toHaveLength(1);
+  expect(JSON.parse(client.sent[0])).toMatchObject({
+    type: 'ACK',
+    action: 'CONNECTED',
+  });
+  expect(manager.broadcast('task.eden.status', { state: 'running' })).toBe(0);
 });
 
 test('wsRoute registers handlers and enforces token from query on open', async (): Promise<void> => {

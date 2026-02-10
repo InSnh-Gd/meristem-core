@@ -16,7 +16,16 @@ import {
   TASKS_COLLECTION,
   USERS_COLLECTION,
 } from '../db/collections';
-import { AUDIT_COLLECTION, type AuditLog } from '../services/audit';
+import {
+  AUDIT_COLLECTION,
+  AUDIT_STATE_COLLECTION,
+  type AuditLog,
+} from '../services/audit';
+
+type AuditSequenceState = {
+  _id: string;
+  value: number;
+};
 
 type InMemoryDoc =
   | UserDocument
@@ -25,7 +34,8 @@ type InMemoryDoc =
   | InvitationDocument
   | TaskDocument
   | NodeDocument
-  | AuditLog;
+  | AuditLog
+  | AuditSequenceState;
 
 type CollectionState = {
   users: UserDocument[];
@@ -35,6 +45,7 @@ type CollectionState = {
   tasks: TaskDocument[];
   nodes: NodeDocument[];
   audits: AuditLog[];
+  auditState: AuditSequenceState[];
 };
 
 type Cursor<TDoc extends InMemoryDoc> = {
@@ -78,6 +89,17 @@ const setValueByPath = (doc: Record<string, unknown>, path: string, value: unkno
     current = asRecord(current[segment]);
   }
   current[segments[segments.length - 1]] = value;
+};
+
+const toFilterSeed = (filter: Record<string, unknown>): Record<string, unknown> => {
+  const seed: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(filter)) {
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      continue;
+    }
+    seed[key] = value;
+  }
+  return seed;
 };
 
 const unsetValueByPath = (doc: Record<string, unknown>, path: string): void => {
@@ -325,12 +347,21 @@ const createCollection = <TDoc extends InMemoryDoc>(
     ): Promise<TDoc | null> => {
       const index = state.data.findIndex((doc) => matchesFilter(asRecord(doc), filter));
       if (index < 0) {
+        if (options?.upsert === true) {
+          const inserted = applyUpdate(toFilterSeed(filter) as TDoc, update);
+          state.data.push(inserted);
+          if (options?.returnDocument === 'before') {
+            return null;
+          }
+          return inserted;
+        }
         return null;
       }
-      const next = applyUpdate(state.data[index], update);
+      const previous = state.data[index];
+      const next = applyUpdate(previous, update);
       state.data[index] = next;
       if (options?.returnDocument === 'before') {
-        return state.data[index];
+        return previous;
       }
       return next;
     },
@@ -349,6 +380,7 @@ export const createInMemoryDbState = (): InMemoryDbState => ({
   tasks: [],
   nodes: [],
   audits: [],
+  auditState: [],
 });
 
 export const createInMemoryDb = (state: InMemoryDbState): Db => {
@@ -374,6 +406,9 @@ export const createInMemoryDb = (state: InMemoryDbState): Db => {
       }
       if (name === AUDIT_COLLECTION) {
         return createCollection<AuditLog>({ data: state.audits }) as unknown as Collection<TSchema>;
+      }
+      if (name === AUDIT_STATE_COLLECTION) {
+        return createCollection<AuditSequenceState>({ data: state.auditState }) as unknown as Collection<TSchema>;
       }
 
       throw new Error(`Unexpected collection: ${name}`);

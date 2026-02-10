@@ -1,12 +1,14 @@
 import type { Msg } from 'nats';
+import { Effect } from 'effect';
+import { isFeatureEnabled } from '../config/feature-flags';
 import { createLogger, type Logger } from '../utils/logger';
 import type { TraceContext } from '../utils/trace-context';
 import {
   applyBroadStrokesFilter,
-  isPulseSnapshotPayload,
   toSnapshotMeta,
   type PulseSnapshotPayload,
 } from './log-triad';
+import { decodeJsonBoundary, decodePulseBoundary, runBoundarySync } from './schema-boundary';
 
 type PulseMessageLike = Pick<Msg, 'data'>;
 
@@ -17,13 +19,15 @@ type PulseIngestDeps = {
 };
 
 export const decodePulseMessage = (message: PulseMessageLike): PulseSnapshotPayload | null => {
-  try {
-    const raw = new TextDecoder().decode(message.data);
-    const parsed = JSON.parse(raw) as unknown;
-    return isPulseSnapshotPayload(parsed) ? parsed : null;
-  } catch {
+  const fastPathEnabled = isFeatureEnabled('ENABLE_FASTPATH_HEARTBEAT');
+  const program = decodeJsonBoundary(message.data, 'pulse').pipe(
+    Effect.flatMap((payload) => decodePulseBoundary(payload, fastPathEnabled)),
+  );
+  const decoded = runBoundarySync(program);
+  if (!decoded.ok) {
     return null;
   }
+  return decoded.value;
 };
 
 export const createPulseMessageHandler = (deps: PulseIngestDeps = {}) => {

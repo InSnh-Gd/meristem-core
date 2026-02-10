@@ -1,9 +1,15 @@
 import { Elysia } from 'elysia';
 import { test, expect } from 'bun:test';
 import type { Collection, Db } from 'mongodb';
+import { WIRE_CONTRACT_VERSION } from '@insnh-gd/meristem-shared';
 import type { AuditEventInput, AuditLog } from '../services/audit';
 import { NodeDocument } from '../db/collections';
 import { createNode, generateHWID, joinRoute, recoverNode, Persona } from '../routes/join';
+
+const sleep = async (durationMs: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, durationMs);
+  });
 
 // 验证 generateHWID 针对固定 UUID / MAC 输出可预测的 64 字符哈希
 test('generateHWID creates deterministic fingerprint', async (): Promise<void> => {
@@ -242,4 +248,185 @@ test('joinRoute logs audit event for existing nodes', async (): Promise<void> =>
   expect(auditEvents[0].meta).toEqual({ persona: 'AGENT', status: 'existing', org_id: 'org-default' });
   expect(auditEvents[0].node_id).toBe(existingNode.node_id);
 
+});
+
+test('joinRoute elides existing-node update when payload is idempotent', async (): Promise<void> => {
+  const existingNodeHwid = 'i'.repeat(64);
+  const existingNode: NodeDocument = {
+    node_id: 'node-existing-idempotent',
+    org_id: 'org-default',
+    hwid: existingNodeHwid,
+    hostname: 'stable-host',
+    persona: 'AGENT',
+    role_flags: { is_relay: false, is_storage: false, is_compute: false },
+    network: { virtual_ip: '10.25.10.3', mode: 'DIRECT', v: 0 },
+    inventory: { cpu_model: 'c', cores: 2, ram_total: 4, os: 'linux', arch: 'x86_64' },
+    status: {
+      online: true,
+      connection_status: 'online',
+      last_seen: new Date(),
+      cpu_usage: 0,
+      ram_free: 2,
+      gpu_info: [],
+    },
+    created_at: new Date(),
+  };
+
+  let updateCalls = 0;
+  const nodeCollection = {
+    findOne: async (query?: Record<string, unknown>): Promise<NodeDocument | null> => {
+      if (query?.hwid === existingNode.hwid) {
+        return existingNode;
+      }
+      return null;
+    },
+    insertOne: async (): Promise<{ insertedId: string }> => ({ insertedId: 'should-not-be-used' }),
+    updateOne: async (): Promise<{ modifiedCount: number }> => {
+      updateCalls += 1;
+      return { modifiedCount: 1 };
+    },
+  };
+
+  const mockDb = {
+    collection: (_name: string): Collection<NodeDocument> => {
+      return nodeCollection as unknown as Collection<NodeDocument>;
+    },
+  };
+
+  const auditLogger = async (_innerDb: Db, event: AuditEventInput): Promise<AuditLog> => ({
+    ...event,
+    _sequence: 3,
+    _hash: 'hash-idempotent',
+    _previous_hash: '',
+  });
+
+  const app = new Elysia();
+  joinRoute(app, mockDb as Db, auditLogger);
+
+  const response = await app.handle(
+    new Request('http://localhost/api/v1/join', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        hwid: existingNodeHwid,
+        hostname: 'stable-host',
+        persona: 'AGENT',
+      }),
+    }),
+  );
+
+  const payload = await response.json();
+  expect(response.status).toBe(200);
+  expect(payload.success).toBe(true);
+  expect(payload.data.status).toBe('existing');
+  expect(updateCalls).toBe(0);
+});
+
+test('joinRoute responds without waiting for audit persistence', async (): Promise<void> => {
+  const recordedNodes: NodeDocument[] = [];
+  const mockDb = {
+    collection: (_name: string): Collection<NodeDocument> => {
+      return {
+        findOne: async (): Promise<NodeDocument | null> => null,
+        insertOne: async (doc: NodeDocument): Promise<{ insertedId: string }> => {
+          recordedNodes.push(doc);
+          return { insertedId: doc.node_id };
+        },
+        updateOne: async (): Promise<{ modifiedCount: number }> => ({ modifiedCount: 1 }),
+      } as unknown as Collection<NodeDocument>;
+    },
+  };
+
+  const auditEvents: AuditEventInput[] = [];
+  let releaseAudit: (() => void) | undefined;
+  const auditGate = new Promise<void>((resolve) => {
+    releaseAudit = resolve;
+  });
+  const auditLogger = async (_innerDb: Db, event: AuditEventInput): Promise<AuditLog> => {
+    await auditGate;
+    auditEvents.push(event);
+    return {
+      ...event,
+      _sequence: 1,
+      _hash: 'delayed-hash',
+      _previous_hash: '',
+    };
+  };
+
+  const app = new Elysia();
+  joinRoute(app, mockDb as Db, auditLogger);
+
+  const responsePromise = app.handle(
+    new Request('http://localhost/api/v1/join', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        hwid: 'r'.repeat(64),
+        hostname: 'async-audit-node',
+        persona: 'AGENT',
+      }),
+    }),
+  );
+
+  const settledWithinWindow = await Promise.race([
+    responsePromise.then(() => true),
+    sleep(20).then(() => false),
+  ]);
+
+  expect(settledWithinWindow).toBe(true);
+  expect(auditEvents).toHaveLength(0);
+
+  if (typeof releaseAudit === 'function') {
+    releaseAudit();
+  }
+
+  const response = await responsePromise;
+  const payload = await response.json();
+  expect(response.status).toBe(200);
+  expect(payload.success).toBe(true);
+  expect(recordedNodes).toHaveLength(1);
+
+  await sleep(0);
+  expect(auditEvents).toHaveLength(1);
+});
+
+test('joinRoute rejects mismatched wire contract version header', async (): Promise<void> => {
+  const nodeCollection = {
+    findOne: async (): Promise<NodeDocument | null> => null,
+    insertOne: async (): Promise<{ insertedId: string }> => ({ insertedId: 'n/a' }),
+    updateOne: async (): Promise<{ modifiedCount: number }> => ({ modifiedCount: 0 }),
+  };
+
+  const mockDb = {
+    collection: (_name: string): Collection<NodeDocument> =>
+      nodeCollection as unknown as Collection<NodeDocument>,
+  };
+
+  const app = new Elysia();
+  joinRoute(app, mockDb as Db);
+
+  const response = await app.handle(
+    new Request('http://localhost/api/v1/join', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-wire-contract-version': `${WIRE_CONTRACT_VERSION}-mismatch`,
+      },
+      body: JSON.stringify({
+        hwid: 'f'.repeat(64),
+        hostname: 'node-wire',
+        persona: 'AGENT',
+      }),
+    }),
+  );
+
+  expect(response.status).toBe(400);
+  await expect(response.json()).resolves.toEqual({
+    success: false,
+    error: 'WIRE_CONTRACT_VERSION_MISMATCH',
+  });
 });

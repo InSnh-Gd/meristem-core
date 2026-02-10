@@ -4,6 +4,7 @@ import {
   TaskDocument,
   TaskStatusType,
 } from '../db/collections';
+import type { DbSession } from '../db/transactions';
 import {
   decodeCreatedAtCursor,
   encodeCreatedAtCursor,
@@ -45,13 +46,14 @@ const DEFAULT_ASSIGNMENT_AVAILABILITY: TaskAvailability = 'READY';
 export const createTask = async (
   db: Db,
   taskData: CreateTaskInput,
+  session: DbSession = null,
 ): Promise<TaskDocument> => {
   const document: TaskDocument = {
     ...taskData,
     created_at: new Date(),
   };
 
-  await insertTask(db, document);
+  await insertTask(db, document, session);
   return document;
 };
 

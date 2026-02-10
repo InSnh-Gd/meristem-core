@@ -10,6 +10,11 @@ type NatsConfig = {
   timeout?: number;
 };
 
+type ManagedSubscription = {
+  subscription: Subscription;
+  [Symbol.dispose]: () => void;
+};
+
 /**
  * 解析 NATS 配置，优先使用显式参数，其次使用环境变量
  */
@@ -136,6 +141,27 @@ export const subscribe = async (
   })();
 
   return sub;
+};
+
+export const toManagedSubscription = (
+  subscription: Subscription,
+): ManagedSubscription => ({
+  subscription,
+  [Symbol.dispose]: (): void => {
+    subscription.unsubscribe();
+  },
+});
+
+export const withSubscription = async <T>(
+  traceContext: TraceContext,
+  subject: string,
+  callback: (msg: Msg) => void | Promise<void>,
+  work: (subscription: Subscription) => Promise<T>,
+  queue?: string
+): Promise<T> => {
+  const subscription = await subscribe(traceContext, subject, callback, queue);
+  using managed = toManagedSubscription(subscription);
+  return work(managed.subscription);
 };
 
 /**

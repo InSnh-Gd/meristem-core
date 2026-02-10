@@ -2,8 +2,9 @@ import { Elysia, t } from 'elysia';
 import { Db } from 'mongodb';
 import { extractTraceId, generateTraceId } from '../utils/trace-context';
 import { authenticateUser, generateJWT } from '../services/auth';
-import { logAuditEvent, type AuditEventInput, type AuditLog } from '../services/audit';
+import { type AuditEventInput, type AuditLog } from '../services/audit';
 import { respondWithCode } from './route-errors';
+import { recordAuditEvent } from '../services/audit-pipeline';
 
 const TOKEN_EXPIRATION_SECONDS = 24 * 60 * 60;
 
@@ -30,12 +31,18 @@ export const LoginErrorResponseSchema = t.Object({
   error: t.String(),
 });
 
-type AuditLogger = (db: Db, event: AuditEventInput) => Promise<AuditLog>;
+type AuditLogger = (db: Db, event: AuditEventInput) => Promise<AuditLog | null>;
+
+const defaultAuthAuditLogger: AuditLogger = (
+  db: Db,
+  event: AuditEventInput,
+): Promise<AuditLog | null> =>
+  recordAuditEvent(db, event, { routeTag: 'auth' });
 
 export const authRoute = (
   app: Elysia,
   db: Db,
-  auditLogger: AuditLogger = logAuditEvent,
+  auditLogger: AuditLogger = defaultAuthAuditLogger,
 ): Elysia => {
   app.post(
     '/api/v1/auth/login',

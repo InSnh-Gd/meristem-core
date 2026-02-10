@@ -1,15 +1,24 @@
 import { Elysia, t } from 'elysia';
-import { Db } from 'mongodb';
-import type { NodePersona } from '@insnh-gd/meristem-shared';
+import { Db, type ClientSession } from 'mongodb';
+import type {
+  JoinResponsePayload,
+  JoinStatus,
+  JoinSuccessData,
+  NodePersona,
+} from '@insnh-gd/meristem-shared';
+import { WIRE_CONTRACT_VERSION } from '@insnh-gd/meristem-shared';
 import { NodeDocument, NODES_COLLECTION, type NodeHardwareProfile } from '../db/collections';
 import { extractTraceId, generateTraceId } from '../utils/trace-context';
 import { DEFAULT_ORG_ID } from '../services/bootstrap';
 import { PERSONA_AGENT, PERSONA_GIG } from '../utils/persona';
 import {
-  logAuditEvent,
   type AuditEventInput,
   type AuditLog,
 } from '../services/audit';
+import { recordAuditEvent, isAuditPipelineReady } from '../services/audit-pipeline';
+import type { DbSession } from '../db/transactions';
+import { runInTransaction } from '../db/transactions';
+import { isDomainError } from '../errors/domain-error';
 
 /**
  * Persona 类型定义：节点角色标识
@@ -174,6 +183,49 @@ const resolveIncomingHardwareProfileHash = async (
   };
 };
 
+const toSessionOption = (session: DbSession | undefined): { session?: ClientSession } =>
+  session ? { session } : {};
+
+const readConnectionStatus = (node: NodeDocument): string | null => {
+  const status = (node as NodeDocument & { status?: { connection_status?: unknown } }).status;
+  const connectionStatus = status?.connection_status;
+  return typeof connectionStatus === 'string' ? connectionStatus : null;
+};
+
+const shouldElideExistingNodeWrite = (
+  existingNode: NodeDocument,
+  input: {
+    hostname: string;
+    persona: Persona;
+    orgId: string;
+    incomingHardwareProfile?: NodeHardwareProfile;
+    incomingHash?: string;
+  },
+): boolean => {
+  if (input.incomingHardwareProfile) {
+    return false;
+  }
+
+  const baselineHash = existingNode.hardware_profile_hash;
+  if (input.incomingHash) {
+    if (!baselineHash || baselineHash !== input.incomingHash) {
+      return false;
+    }
+  }
+
+  const connectionStatus = readConnectionStatus(existingNode);
+  if (connectionStatus !== 'online') {
+    return false;
+  }
+
+  const existingOrgId = existingNode.org_id || DEFAULT_ORG_ID;
+  return (
+    existingNode.hostname === input.hostname &&
+    existingNode.persona === input.persona &&
+    existingOrgId === input.orgId
+  );
+};
+
 /**
  * 纯函数：生成 HWID（硬件唯一指纹）
  * 基于 docs/standards/HARDWARE_PROTOCOL.md §2 HWID 生成规范
@@ -214,6 +266,7 @@ export const createNode = async (
     hardwareProfile?: NodeHardwareProfile;
     hardwareProfileHash?: string;
     orgId?: string;
+    session?: DbSession;
   } = {},
 ): Promise<NodeDocument> => {
   // 生成 node_id：node-{timestamp}-{random}
@@ -266,13 +319,19 @@ export const createNode = async (
     created_at: now,
   };
 
-  await db.collection<NodeDocument>(NODES_COLLECTION).insertOne(newNode);
+  await db.collection<NodeDocument>(NODES_COLLECTION).insertOne(
+    newNode,
+    toSessionOption(options.session),
+  );
   return newNode;
 };
 
 /**
  * 纯函数：HWID 亲和性检测
  * 查询数据库，如 HWID 存在则返回现有节点
+ *
+ * 逻辑块：支持可选 projection，用于在 join 热路径只读取必要字段。
+ * 默认不传 projection 时保持原行为（返回完整文档），以兼容现有调用与测试。
  *
  * @param db - MongoDB 数据库实例
  * @param hwid - 硬件唯一指纹
@@ -281,10 +340,16 @@ export const createNode = async (
 export const recoverNode = async (
   db: Db,
   hwid: string,
+  session: DbSession = null,
+  projection?: Record<string, 1>,
 ): Promise<NodeDocument | null> => {
+  const queryOptions = {
+    ...toSessionOption(session),
+    ...(projection ? { projection } : {}),
+  };
   const node = await db
     .collection<NodeDocument>(NODES_COLLECTION)
-    .findOne({ hwid });
+    .findOne({ hwid }, queryOptions);
   return node;
 };
 
@@ -301,16 +366,38 @@ export const recoverNode = async (
  * @param app - Elysia 应用实例
  * @returns 配置了 join 路由的 Elysia 实例
  */
-type AuditLogger = (db: Db, event: AuditEventInput) => Promise<AuditLog>;
+type AuditLogger = (db: Db, event: AuditEventInput, session?: DbSession) => Promise<AuditLog | null>;
+
+const defaultJoinAuditLogger: AuditLogger = (
+  db: Db,
+  event: AuditEventInput,
+  session?: DbSession,
+): Promise<AuditLog | null> =>
+  recordAuditEvent(db, event, {
+    routeTag: 'join',
+    session,
+  });
 
 export const joinRoute = (
   app: Elysia,
   db: Db,
-  auditLogger: AuditLogger = logAuditEvent,
+  auditLogger: AuditLogger = defaultJoinAuditLogger,
 ): Elysia => {
   app.post(
     '/api/v1/join',
     async ({ body, set, request }) => {
+      const clientContractVersion = request.headers.get('x-wire-contract-version');
+      if (
+        clientContractVersion &&
+        clientContractVersion !== WIRE_CONTRACT_VERSION
+      ) {
+        set.status = 400;
+        return {
+          success: false,
+          error: 'WIRE_CONTRACT_VERSION_MISMATCH',
+        };
+      }
+
       const { hwid, hostname, persona, hardware_profile, hardware_profile_hash, org_id } = body;
       const incomingHardwareProfile = hardware_profile as NodeHardwareProfile | undefined;
       const incomingOrgId = typeof org_id === 'string' && org_id.length > 0 ? org_id : DEFAULT_ORG_ID;
@@ -327,130 +414,212 @@ export const joinRoute = (
       }
       const incomingHash = incomingHashResolution.hash;
 
-      const existingNode = await recoverNode(db, hwid);
-
-      let node_id: string;
-      let status: 'new' | 'existing' | 'pending_approval';
-      let auditLevel: 'INFO' | 'WARN' = 'INFO';
-      let auditContent = 'Node joined';
-      let auditMeta: Record<string, unknown> = { persona, org_id: incomingOrgId };
-      const now = new Date();
-
-      if (existingNode) {
-        node_id = existingNode.node_id;
-        const baselineHash = existingNode.hardware_profile_hash;
-        const driftDetected =
-          typeof baselineHash === 'string' &&
-          baselineHash.length > 0 &&
-          baselineHash !== incomingHash;
-
-        if (driftDetected) {
-          status = 'pending_approval';
-          auditLevel = 'WARN';
-          auditContent = 'Node join blocked by hardware profile drift';
-          auditMeta = {
-            ...auditMeta,
-            status,
-            drift_detected: true,
-            baseline_hash: baselineHash,
-            incoming_hash: incomingHash,
-          };
-
-          await db
-            .collection<NodeDocument>(NODES_COLLECTION)
-            .updateOne(
-              { node_id },
-              {
-                $set: {
-                  hostname,
-                  persona,
-                  org_id: existingNode.org_id || incomingOrgId,
-                  ...(incomingHardwareProfile ? { hardware_profile: incomingHardwareProfile } : {}),
-                  ...(incomingHash ? { hardware_profile_hash: incomingHash } : {}),
-                  hardware_profile_drift: {
-                    detected: true,
-                    baseline_hash: baselineHash,
-                    incoming_hash: incomingHash,
-                    detected_at: now,
-                  },
-                  'status.online': false,
-                  'status.connection_status': 'pending_approval',
-                  'status.last_seen': now,
-                },
-              },
-            );
-        } else {
-          status = 'existing';
-          const nextBaselineHash = baselineHash ?? incomingHash;
-          auditMeta = {
-            ...auditMeta,
-            status,
-          };
-
-          await db
-            .collection<NodeDocument>(NODES_COLLECTION)
-            .updateOne(
-              { node_id },
-              {
-                $set: {
-                  hostname,
-                  persona,
-                  org_id: existingNode.org_id || incomingOrgId,
-                  ...(incomingHardwareProfile ? { hardware_profile: incomingHardwareProfile } : {}),
-                  ...(incomingHash ? { hardware_profile_hash: incomingHash } : {}),
-                  hardware_profile_drift: {
-                    detected: false,
-                    baseline_hash: nextBaselineHash,
-                    incoming_hash: incomingHash,
-                  },
-                  'status.online': true,
-                  'status.connection_status': 'online',
-                  'status.last_seen': now,
-                },
-              },
-            );
-        }
-      } else {
-        const newNode = await createNode(db, hwid, persona, {
-          hostname,
-          hardwareProfile: incomingHardwareProfile,
-          hardwareProfileHash: incomingHash,
-          orgId: incomingOrgId,
+      const traceId = extractTraceId(request.headers) ?? generateTraceId();
+      const executeJoinFlow = async (session: DbSession = null): Promise<{
+        responseData: JoinSuccessData;
+        auditEvent: AuditEventInput;
+      }> => {
+        /**
+         * 逻辑块：join 热路径只读取恢复判断所需的最小字段。
+         * 通过 projection 降低 BSON 反序列化与对象复制成本，避免把完整 Node 文档拉入事务。
+         */
+        const existingNode = await recoverNode(db, hwid, session, {
+          node_id: 1,
+          org_id: 1,
+          hostname: 1,
+          persona: 1,
+          status: 1,
+          hardware_profile_hash: 1,
         });
-        node_id = newNode.node_id;
-        status = 'new';
-        auditMeta = {
-          ...auditMeta,
-          status,
+
+        let node_id: string;
+        let status: JoinStatus;
+        let auditLevel: 'INFO' | 'WARN' = 'INFO';
+        let auditContent = 'Node joined';
+        let auditMeta: Record<string, unknown> = { persona, org_id: incomingOrgId };
+        const now = new Date();
+
+        if (existingNode) {
+          node_id = existingNode.node_id;
+          const baselineHash = existingNode.hardware_profile_hash;
+          const driftDetected =
+            typeof baselineHash === 'string' &&
+            baselineHash.length > 0 &&
+            baselineHash !== incomingHash;
+
+          if (driftDetected) {
+            status = 'pending_approval';
+            auditLevel = 'WARN';
+            auditContent = 'Node join blocked by hardware profile drift';
+            auditMeta = {
+              ...auditMeta,
+              status,
+              drift_detected: true,
+              baseline_hash: baselineHash,
+              incoming_hash: incomingHash,
+            };
+
+            await db
+              .collection<NodeDocument>(NODES_COLLECTION)
+              .updateOne(
+                { node_id },
+                {
+                  $set: {
+                    hostname,
+                    persona,
+                    org_id: existingNode.org_id || incomingOrgId,
+                    ...(incomingHardwareProfile ? { hardware_profile: incomingHardwareProfile } : {}),
+                    ...(incomingHash ? { hardware_profile_hash: incomingHash } : {}),
+                    hardware_profile_drift: {
+                      detected: true,
+                      baseline_hash: baselineHash,
+                      incoming_hash: incomingHash,
+                      detected_at: now,
+                    },
+                    'status.online': false,
+                    'status.connection_status': 'pending_approval',
+                    'status.last_seen': now,
+                  },
+                },
+                toSessionOption(session),
+              );
+          } else {
+            status = 'existing';
+            const nextBaselineHash = baselineHash ?? incomingHash;
+            auditMeta = {
+              ...auditMeta,
+              status,
+            };
+            /**
+             * 逻辑块：existing join 在“状态已一致”时跳过节点文档写入。
+             * 目标是缩短事务临界区并降低同 HWID 热点写冲突；只要在线状态、身份字段与组织字段未变，
+             * 就不再重复写相同值，仍保持审计事件入队与响应语义不变。
+             */
+            const canElideWrite = shouldElideExistingNodeWrite(existingNode, {
+              hostname,
+              persona,
+              orgId: incomingOrgId,
+              incomingHardwareProfile,
+              incomingHash,
+            });
+
+            if (!canElideWrite) {
+              await db
+                .collection<NodeDocument>(NODES_COLLECTION)
+                .updateOne(
+                  { node_id },
+                  {
+                    $set: {
+                      hostname,
+                      persona,
+                      org_id: existingNode.org_id || incomingOrgId,
+                      ...(incomingHardwareProfile ? { hardware_profile: incomingHardwareProfile } : {}),
+                      ...(incomingHash ? { hardware_profile_hash: incomingHash } : {}),
+                      hardware_profile_drift: {
+                        detected: false,
+                        baseline_hash: nextBaselineHash,
+                        incoming_hash: incomingHash,
+                      },
+                      'status.online': true,
+                      'status.connection_status': 'online',
+                      'status.last_seen': now,
+                    },
+                  },
+                  toSessionOption(session),
+                );
+            }
+          }
+        } else {
+          const newNode = await createNode(db, hwid, persona, {
+            hostname,
+            hardwareProfile: incomingHardwareProfile,
+            hardwareProfileHash: incomingHash,
+            orgId: incomingOrgId,
+            session,
+          });
+          node_id = newNode.node_id;
+          status = 'new';
+          auditMeta = {
+            ...auditMeta,
+            status,
+          };
+        }
+
+        const auditEvent: AuditEventInput = {
+          ts: Date.now(),
+          level: auditLevel,
+          node_id,
+          source: 'join',
+          trace_id: traceId,
+          content: auditContent,
+          meta: auditMeta,
         };
 
-      }
-
-      const traceId = extractTraceId(request.headers) ?? generateTraceId();
-      const auditEvent: AuditEventInput = {
-        ts: Date.now(),
-        level: auditLevel,
-        node_id,
-        source: 'join',
-        trace_id: traceId,
-        content: auditContent,
-        meta: auditMeta,
+        return {
+          responseData: {
+            node_id,
+            core_ip: '10.25.0.1',
+            status,
+          },
+          auditEvent,
+        };
       };
 
-      try {
-        await auditLogger(db, auditEvent);
-      } catch (auditError) {
-        console.error('[Audit] failed to log node join', auditError);
+      const useTransactionalIntake = isAuditPipelineReady() && auditLogger === defaultJoinAuditLogger;
+
+      let responseData: JoinSuccessData;
+      if (useTransactionalIntake) {
+        /**
+         * 新审计主路径：业务写入 + audit_intent 入队同事务提交。
+         * 这样可保证“join 成功响应”与“审计已进入 durable intake”同时成立。
+         */
+        try {
+          responseData = await runInTransaction(db, async (session) => {
+            const result = await executeJoinFlow(session);
+            await auditLogger(db, result.auditEvent, session);
+            return result.responseData;
+          });
+        } catch (error) {
+          if (isDomainError(error) && error.code === 'AUDIT_BACKPRESSURE') {
+            set.status = 503;
+            set.headers['Retry-After'] = '1';
+            return {
+              success: false,
+              error: 'AUDIT_BACKPRESSURE',
+            };
+          }
+          if (isDomainError(error) && error.code === 'TRANSACTION_ABORTED') {
+            set.status = 409;
+            set.headers['Retry-After'] = '1';
+            return {
+              success: false,
+              error: 'TRANSACTION_ABORTED',
+            };
+          }
+          console.error('[Join] failed to persist join transaction', error);
+          set.status = 500;
+          return {
+            success: false,
+            error: 'INTERNAL_ERROR',
+          };
+        }
+      } else {
+        /**
+         * 兼容路径（测试注入 logger / 管线未就绪）：
+         * 先完成 join 主流程，再异步尝试审计写入，避免阻塞节点接入。
+         */
+        const result = await executeJoinFlow();
+        responseData = result.responseData;
+        void auditLogger(db, result.auditEvent).catch((auditError) => {
+          console.error('[Audit] failed to log node join', auditError);
+        });
       }
 
-      return {
+      const response: JoinResponsePayload = {
         success: true,
-        data: {
-          node_id,
-          core_ip: '10.25.0.1',
-          status,
-        },
+        data: responseData,
       };
+      return response;
     },
     {
       body: JoinRequestBodySchema,
@@ -460,7 +629,15 @@ export const joinRoute = (
           success: t.Boolean(),
           error: t.String(),
         }),
+        409: t.Object({
+          success: t.Boolean(),
+          error: t.String(),
+        }),
         500: t.Object({
+          success: t.Boolean(),
+          error: t.String(),
+        }),
+        503: t.Object({
           success: t.Boolean(),
           error: t.String(),
         }),
