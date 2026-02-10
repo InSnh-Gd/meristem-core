@@ -16,6 +16,7 @@
         "nats": "^2.29.3",
       },
       "devDependencies": {
+        "@insnh-gd/meristem-tooling": "npm:@jsr/insnh-gd__meristem-tooling@^0.1.0",
         "@types/bun": "latest",
         "pino": "^10.3.0",
         "typescript": "^5.0.0",
@@ -30,6 +31,8 @@
     "@iarna/toml": ["@iarna/toml@2.2.5", "", {}, "sha512-trnsAYxU3xnS1gPHPyU961coFyLkh4gAD/0zQ5mymY4yOZ+CYvsPqUbOFSw0aDM4y0tV7tiFxL/1XfXPNC6IPg=="],
 
     "@insnh-gd/meristem-shared": ["meristem-shared@file:../meristem-shared", { "devDependencies": { "@types/bun": "latest", "typescript": "^5.7.2" } }],
+
+    "@insnh-gd/meristem-tooling": ["@jsr/insnh-gd__meristem-tooling@0.1.0", "https://npm.jsr.io/~/11/@jsr/insnh-gd__meristem-tooling/0.1.0.tgz", {}, "sha512-CpvsxNALBrsgn7Mm4GCJZgWHmmDBFyNW1pOnyBTE20d5Fr3USMvei7SJry0M2Edn2xQFJYKXHzsbb/y0Va7n0A=="],
 
     "@mongodb-js/saslprep": ["@mongodb-js/saslprep@1.4.5", "", { "dependencies": { "sparse-bitfield": "^3.0.3" } }, "sha512-k64Lbyb7ycCSXHSLzxVdb2xsKGPMvYZfCICXvDsI8Z65CeWQzTEKS4YmGbnqw+U9RBvLPTsB6UCmwkgsDTGWIw=="],
 
