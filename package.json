@@ -29,7 +29,7 @@
     "nats": "^2.29.3"
   },
   "devDependencies": {
-    "@insnh-gd/meristem-tooling": "npm:@jsr/insnh-gd__meristem-tooling@^0.1.2",
+    "@insnh-gd/meristem-tooling": "npm:@jsr/insnh-gd__meristem-tooling@^0.1.3",
     "@types/bun": "latest",
     "@typescript/native-preview": "^7.0.0-dev.20260210.1",
     "pino": "^10.3.0",
