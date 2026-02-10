@@ -74,6 +74,19 @@ const TasksListResponseSchema = t.Object({
 
 type RawTaskPayload = Record<string, unknown>;
 type TaskRouteUser = AuthStore['user'];
+type UnauthorizedResponse = {
+  success: false;
+  error: string;
+};
+type ResolvedTaskRouteUser =
+  | {
+      ok: true;
+      user: TaskRouteUser;
+    }
+  | {
+      ok: false;
+      denied: UnauthorizedResponse;
+    };
 
 const normalizePayload = (
   rawPayload: RawTaskPayload,
@@ -119,7 +132,7 @@ const normalizePayload = (
 const resolveRequestUser = (
   set: { status?: unknown },
   store: Record<string, unknown>,
-): TaskRouteUser | null => {
+): ResolvedTaskRouteUser => {
   /**
    * 逻辑块：路由层 user 解析保持“显式校验 + 显式拒绝”。
    * 不依赖 `store as AuthStore` 的强断言假设，避免中间件缺失/异常时出现隐式 undefined 访问。
@@ -127,10 +140,15 @@ const resolveRequestUser = (
    */
   const authStore = store as Partial<Pick<AuthStore, 'user'>>;
   if (!authStore.user) {
-    respondWithCode(set, 'UNAUTHORIZED');
-    return null;
+    return {
+      ok: false,
+      denied: respondWithCode(set, 'UNAUTHORIZED'),
+    };
   }
-  return authStore.user;
+  return {
+    ok: true,
+    user: authStore.user,
+  };
 };
 
 const isSuperadmin = (user: TaskRouteUser): boolean => user.permissions.includes('*');
@@ -153,13 +171,11 @@ export const tasksRoute = (app: Elysia, db: Db): Elysia => {
   app.get(
     '/api/v1/tasks',
     async ({ query, set, store }) => {
-      const user = resolveRequestUser(set, store);
-      if (!user) {
-        return {
-          success: false,
-          error: 'UNAUTHORIZED',
-        };
+      const resolved = resolveRequestUser(set, store);
+      if (!resolved.ok) {
+        return resolved.denied;
       }
+      const user = resolved.user;
 
       const limit = query.limit ?? 100;
       const filter: Record<string, unknown> = {};
@@ -211,13 +227,11 @@ export const tasksRoute = (app: Elysia, db: Db): Elysia => {
   app.post(
     '/api/v1/tasks',
     async ({ body, request, set, store }) => {
-      const user = resolveRequestUser(set, store);
-      if (!user) {
-        return {
-          success: false,
-          error: 'UNAUTHORIZED',
-        };
+      const resolved = resolveRequestUser(set, store);
+      if (!resolved.ok) {
+        return resolved.denied;
       }
+      const user = resolved.user;
 
       const traceId = extractTraceId(request.headers) ?? generateTraceId();
       const actorOrgId = await resolveActorOrgId(db, user);
