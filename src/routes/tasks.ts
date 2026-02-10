@@ -73,6 +73,7 @@ const TasksListResponseSchema = t.Object({
 });
 
 type RawTaskPayload = Record<string, unknown>;
+type TaskRouteUser = AuthStore['user'];
 
 const normalizePayload = (
   rawPayload: RawTaskPayload,
@@ -115,36 +116,56 @@ const normalizePayload = (
   };
 };
 
-const isSuperadmin = (authStore: AuthStore): boolean => authStore.user.permissions.includes('*');
+const resolveRequestUser = (
+  set: { status?: unknown },
+  store: Record<string, unknown>,
+): TaskRouteUser | null => {
+  /**
+   * 逻辑块：路由层 user 解析保持“显式校验 + 显式拒绝”。
+   * 不依赖 `store as AuthStore` 的强断言假设，避免中间件缺失/异常时出现隐式 undefined 访问。
+   * 解析失败统一返回 `UNAUTHORIZED`，保证响应语义稳定。
+   */
+  const authStore = store as Partial<Pick<AuthStore, 'user'>>;
+  if (!authStore.user) {
+    respondWithCode(set, 'UNAUTHORIZED');
+    return null;
+  }
+  return authStore.user;
+};
+
+const isSuperadmin = (user: TaskRouteUser): boolean => user.permissions.includes('*');
 
 const resolveActorOrgId = async (
   db: Db,
-  authStore: AuthStore,
+  user: TaskRouteUser,
 ): Promise<string | null> => {
-  if (authStore.user.type !== 'USER') {
+  if (user.type !== 'USER') {
     return DEFAULT_ORG_ID;
   }
-  const user = await getUserById(db, authStore.user.id);
-  if (!user) {
+  const actor = await getUserById(db, user.id);
+  if (!actor) {
     return null;
   }
-  return user.org_id;
+  return actor.org_id;
 };
 
 export const tasksRoute = (app: Elysia, db: Db): Elysia => {
   app.get(
     '/api/v1/tasks',
     async ({ query, set, store }) => {
-      const authStore = store as AuthStore;
-      if (!authStore.user) {
-        return respondWithCode(set, 'UNAUTHORIZED');
+      const user = resolveRequestUser(set, store);
+      if (!user) {
+        return {
+          success: false,
+          error: 'UNAUTHORIZED',
+        };
       }
 
       const limit = query.limit ?? 100;
       const filter: Record<string, unknown> = {};
 
-      if (!isSuperadmin(authStore)) {
-        const actorOrgId = await resolveActorOrgId(db, authStore);
+      if (!isSuperadmin(user)) {
+        const actorOrgId = await resolveActorOrgId(db, user);
         if (!actorOrgId) {
           return respondWithCode(set, 'UNAUTHORIZED');
         }
@@ -190,14 +211,16 @@ export const tasksRoute = (app: Elysia, db: Db): Elysia => {
   app.post(
     '/api/v1/tasks',
     async ({ body, request, set, store }) => {
-      const authStore = store as AuthStore;
-
-      if (!authStore.user) {
-        return respondWithCode(set, 'UNAUTHORIZED');
+      const user = resolveRequestUser(set, store);
+      if (!user) {
+        return {
+          success: false,
+          error: 'UNAUTHORIZED',
+        };
       }
 
       const traceId = extractTraceId(request.headers) ?? generateTraceId();
-      const actorOrgId = await resolveActorOrgId(db, authStore);
+      const actorOrgId = await resolveActorOrgId(db, user);
       if (!actorOrgId) {
         return respondWithCode(set, 'UNAUTHORIZED');
       }
@@ -207,7 +230,7 @@ export const tasksRoute = (app: Elysia, db: Db): Elysia => {
           db,
           routeTag: 'tasks',
           source: 'tasks',
-          nodeId: authStore.user.id,
+          nodeId: user.id,
           traceId,
           reason: callDepth.reason,
           rawCallDepth: callDepth.raw ?? '',
@@ -223,7 +246,7 @@ export const tasksRoute = (app: Elysia, db: Db): Elysia => {
 
       const taskData: CreateTaskInput = {
         task_id: taskId,
-        owner_id: authStore.user.id,
+        owner_id: user.id,
         org_id: actorOrgId,
         trace_id: traceId,
         target_node_id: targetNodeId ?? '',
@@ -250,7 +273,7 @@ export const tasksRoute = (app: Elysia, db: Db): Elysia => {
       const auditEvent: AuditEventInput = {
         ts: Date.now(),
         level: 'INFO',
-        node_id: authStore.user.id,
+        node_id: user.id,
         source: 'tasks',
         trace_id: traceId,
         content: `Task created (${body.name})`,
