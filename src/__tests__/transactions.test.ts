@@ -106,10 +106,9 @@ test('runInTransaction binds startSession context from db client', async (): Pro
   expect(endSessionCalls).toBe(1);
 });
 
-test('runInTransaction falls back to non-session execution when transactions are unsupported', async (): Promise<void> => {
+test('runInTransaction fails fast when transactions are unsupported', async (): Promise<void> => {
   let withTransactionCalls = 0;
   let workCalls = 0;
-  let sessionCalls = 0;
 
   const db = {
     client: {
@@ -129,17 +128,12 @@ test('runInTransaction falls back to non-session execution when transactions are
     },
   } as unknown as Db;
 
-  const value = await runInTransaction(db, async (session) => {
+  await expect(runInTransaction(db, async () => {
     workCalls += 1;
-    if (session) {
-      sessionCalls += 1;
-      return 'with-session';
-    }
-    return 'without-session';
+    return 'with-session';
+  })).rejects.toMatchObject({
+    code: 'TRANSACTION_ABORTED',
   });
-
-  expect(value).toBe('without-session');
   expect(withTransactionCalls).toBe(1);
-  expect(workCalls).toBe(1);
-  expect(sessionCalls).toBe(0);
+  expect(workCalls).toBe(0);
 });

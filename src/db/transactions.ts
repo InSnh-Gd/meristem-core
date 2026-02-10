@@ -139,12 +139,11 @@ export const runInTransaction = async <T>(
     });
     if (!result.done && isTransactionUnsupportedError(error)) {
       /**
-       * 事务不可用时的单次降级执行：
-       * - 前置条件：事务体尚未成功完成（result.done=false）；
-       * - 策略：仅重试一次无 session 路径，保证 standalone 环境可用；
-       * - 边界：若事务体已完成或命中其他错误，仍按 TRANSACTION_ABORTED 抛出。
+       * 逻辑块：事务能力缺失直接失败，不再降级为无事务执行。
+       * 原因：审计/权限等关键写路径依赖事务原子性，多写场景下降级会放大一致性风险。
+       * 处置：让部署侧修复 Mongo 拓扑（ReplicaSet/Mongos），而不是在应用层吞掉约束。
        */
-      return work(null);
+      throw toDomainError(error, 'TRANSACTION_ABORTED');
     }
     throw toDomainError(error, 'TRANSACTION_ABORTED');
   }

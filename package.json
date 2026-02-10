@@ -31,6 +31,7 @@
   "devDependencies": {
     "@insnh-gd/meristem-tooling": "npm:@jsr/insnh-gd__meristem-tooling@^0.1.2",
     "@types/bun": "latest",
+    "@typescript/native-preview": "^7.0.0-dev.20260210.1",
     "pino": "^10.3.0",
     "typescript": "^5.0.0"
   }

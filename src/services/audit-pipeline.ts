@@ -149,6 +149,7 @@ type AuditStateDocument = {
 type PendingCommit = {
   intent: AuditIntent;
   auditLog: AuditLog;
+  expectedPartitionTail: PartitionTail;
   nextPartitionTail: PartitionTail;
 };
 
@@ -255,6 +256,11 @@ const isDuplicateKeyOnlyBulkError = (error: unknown): boolean => {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const AUDIT_LOG_WRITE_INCOMPLETE = 'AUDIT_LOG_WRITE_INCOMPLETE';
+const AUDIT_LOG_WRITE_MISMATCH = 'AUDIT_LOG_WRITE_MISMATCH';
+const AUDIT_GLOBAL_TAIL_CONFLICT = 'AUDIT_GLOBAL_TAIL_CONFLICT';
+const AUDIT_PARTITION_TAIL_CONFLICT = 'AUDIT_PARTITION_TAIL_CONFLICT';
 
 const canonicalizeValue = (value: unknown): unknown => {
   if (Array.isArray(value)) {
@@ -405,6 +411,13 @@ const adjustRuntimeBacklog = (delta: number): void => {
   runtime.backlogCount = Math.max(0, runtime.backlogCount + delta);
 };
 
+const isAuditCommitConflictError = (error: unknown): boolean =>
+  error instanceof Error &&
+  (error.message === AUDIT_GLOBAL_TAIL_CONFLICT ||
+    error.message === AUDIT_PARTITION_TAIL_CONFLICT ||
+    error.message === AUDIT_LOG_WRITE_INCOMPLETE ||
+    error.message === AUDIT_LOG_WRITE_MISMATCH);
+
 const toFailureRecord = (
   intent: AuditIntent,
   reason: string,
@@ -478,10 +491,11 @@ const markIntentForRetry = async (
 const buildCommitBatch = async (
   db: Db,
   intents: AuditIntent[],
+  baseGlobalTail: GlobalTail,
 ): Promise<PendingCommit[]> => {
   const batch: PendingCommit[] = [];
-  let globalSequence = runtime.globalTail.sequence;
-  let globalHash = runtime.globalTail.hash;
+  let globalSequence = baseGlobalTail.sequence;
+  let globalHash = baseGlobalTail.hash;
 
   for (const intent of intents) {
     const digest = calculatePayloadDigest(intent.payload);
@@ -519,6 +533,10 @@ const buildCommitBatch = async (
     batch.push({
       intent,
       auditLog,
+      expectedPartitionTail: {
+        sequence: partitionTail.sequence,
+        hash: partitionTail.hash,
+      },
       nextPartitionTail: {
         sequence: partitionSequence,
         hash: partitionHash,
@@ -529,9 +547,48 @@ const buildCommitBatch = async (
   return batch;
 };
 
+const assertPersistedLogsForBatch = async (
+  logs: Collection<AuditLog>,
+  batch: PendingCommit[],
+  session: DbSession | undefined,
+): Promise<void> => {
+  const eventIds = batch.map((item) => item.intent.event_id);
+  const persisted = await logs.find(
+    { event_id: { $in: eventIds } },
+    toSessionOption(session),
+  ).toArray();
+  const persistedByEventId = new Map<string, AuditLog>();
+  for (const row of persisted) {
+    if (typeof row.event_id === 'string') {
+      persistedByEventId.set(row.event_id, row);
+    }
+  }
+
+  for (const item of batch) {
+    const expected = item.auditLog;
+    const actual = persistedByEventId.get(item.intent.event_id);
+    if (!actual) {
+      throw new Error(AUDIT_LOG_WRITE_INCOMPLETE);
+    }
+
+    if (
+      actual._sequence !== expected._sequence ||
+      actual._previous_hash !== expected._previous_hash ||
+      actual._hash !== expected._hash ||
+      actual.partition_id !== expected.partition_id ||
+      actual.partition_sequence !== expected.partition_sequence ||
+      actual.partition_hash !== expected.partition_hash ||
+      actual.partition_previous_hash !== expected.partition_previous_hash
+    ) {
+      throw new Error(AUDIT_LOG_WRITE_MISMATCH);
+    }
+  }
+};
+
 const commitBatch = async (
   db: Db,
   batch: PendingCommit[],
+  expectedGlobalTail: GlobalTail,
 ): Promise<void> => {
   if (batch.length === 0) {
     return;
@@ -541,6 +598,18 @@ const commitBatch = async (
     sequence: batch[batch.length - 1].auditLog._sequence,
     hash: batch[batch.length - 1].auditLog._hash,
   };
+  const partitionTailUpdates = new Map<number, { expected: PartitionTail; next: PartitionTail }>();
+  for (const item of batch) {
+    const existing = partitionTailUpdates.get(item.intent.partition_id);
+    if (!existing) {
+      partitionTailUpdates.set(item.intent.partition_id, {
+        expected: item.expectedPartitionTail,
+        next: item.nextPartitionTail,
+      });
+      continue;
+    }
+    existing.next = item.nextPartitionTail;
+  }
 
   await runInTransaction(db, async (session) => {
     const logs = getLogsCollection(db);
@@ -565,6 +634,7 @@ const commitBatch = async (
         if (!isDuplicateKeyError(error) && !isDuplicateKeyOnlyBulkError(error)) {
           throw error;
         }
+        await assertPersistedLogsForBatch(logs, batch, session);
       }
     } else {
       /**
@@ -580,6 +650,7 @@ const commitBatch = async (
           }
         }
       }
+      await assertPersistedLogsForBatch(logs, batch, session);
     }
 
     /**
@@ -631,49 +702,79 @@ const commitBatch = async (
     }
 
     /**
-     * 逻辑块：按分区聚合尾指针后再 upsert，避免同一批次内重复写同一 partition 文档。
+     * 逻辑块：按分区聚合尾指针后再执行 CAS upsert。
+     * 过滤条件绑定 expected tail，只有“我看到的旧值”仍成立时才允许推进分区链；
+     * 若并发写者已推进尾指针，会触发冲突并整体回滚，避免分区链被覆写。
      */
-    const partitionTailUpdates = new Map<number, PartitionTail>();
-    for (const item of batch) {
-      partitionTailUpdates.set(item.intent.partition_id, item.nextPartitionTail);
-    }
     if (typeof partitions.bulkWrite === 'function') {
-      await partitions.bulkWrite(
-        [...partitionTailUpdates.entries()].map(([partitionId, tail]) => ({
-          updateOne: {
-            filter: { _id: `partition:${partitionId}` },
-            update: {
+      try {
+        await partitions.bulkWrite(
+          [...partitionTailUpdates.entries()].map(([partitionId, guard]) => ({
+            updateOne: {
+              filter: {
+                _id: `partition:${partitionId}`,
+                partition_id: partitionId,
+                last_sequence: guard.expected.sequence,
+                last_hash: guard.expected.hash,
+              },
+              update: {
+                $set: {
+                  partition_id: partitionId,
+                  last_sequence: guard.next.sequence,
+                  last_hash: guard.next.hash,
+                  updated_at: now,
+                },
+              },
+              upsert: true,
+            },
+          })),
+          { ...toSessionOption(session), ordered: false },
+        );
+      } catch (error) {
+        if (isDuplicateKeyError(error) || isDuplicateKeyOnlyBulkError(error)) {
+          throw new Error(AUDIT_PARTITION_TAIL_CONFLICT);
+        }
+        throw error;
+      }
+    } else {
+      for (const [partitionId, guard] of partitionTailUpdates.entries()) {
+        try {
+          await partitions.updateOne(
+            {
+              _id: `partition:${partitionId}`,
+              partition_id: partitionId,
+              last_sequence: guard.expected.sequence,
+              last_hash: guard.expected.hash,
+            },
+            {
               $set: {
                 partition_id: partitionId,
-                last_sequence: tail.sequence,
-                last_hash: tail.hash,
+                last_sequence: guard.next.sequence,
+                last_hash: guard.next.hash,
                 updated_at: now,
               },
             },
-            upsert: true,
-          },
-        })),
-        { ...toSessionOption(session), ordered: false },
-      );
-    } else {
-      for (const [partitionId, tail] of partitionTailUpdates.entries()) {
-        await partitions.updateOne(
-          { _id: `partition:${partitionId}` },
-          {
-            $set: {
-              partition_id: partitionId,
-              last_sequence: tail.sequence,
-              last_hash: tail.hash,
-              updated_at: now,
-            },
-          },
-          { ...toSessionOption(session), upsert: true },
-        );
+            { ...toSessionOption(session), upsert: true },
+          );
+        } catch (error) {
+          if (isDuplicateKeyError(error)) {
+            throw new Error(AUDIT_PARTITION_TAIL_CONFLICT);
+          }
+          throw error;
+        }
       }
     }
 
-    await state.updateOne(
-      { _id: AUDIT_STATE_ID },
+    /**
+     * 逻辑块：全局 tail 更新采用 CAS（expected sequence/hash）。
+     * 这一步是多写安全的最终闸门：只有持有正确前驱的批次才能提交到全局链头。
+     */
+    const stateUpdate = await state.updateOne(
+      {
+        _id: AUDIT_STATE_ID,
+        global_last_sequence: expectedGlobalTail.sequence,
+        global_last_hash: expectedGlobalTail.hash,
+      },
       {
         $set: {
           value: nextGlobalTail.sequence,
@@ -685,17 +786,16 @@ const commitBatch = async (
           _id: AUDIT_STATE_ID,
         },
       },
-      { ...toSessionOption(session), upsert: true },
+      { ...toSessionOption(session), upsert: false },
     );
+    if (stateUpdate.modifiedCount === 0) {
+      throw new Error(AUDIT_GLOBAL_TAIL_CONFLICT);
+    }
   });
 
   runtime.globalTail = nextGlobalTail;
-  const partitionTailUpdates = new Map<number, PartitionTail>();
-  for (const item of batch) {
-    partitionTailUpdates.set(item.intent.partition_id, item.nextPartitionTail);
-  }
-  for (const [partitionId, tail] of partitionTailUpdates.entries()) {
-    runtime.partitionTails.set(partitionId, tail);
+  for (const [partitionId, guard] of partitionTailUpdates.entries()) {
+    runtime.partitionTails.set(partitionId, guard.next);
   }
   adjustRuntimeBacklog(-batch.length);
 };
@@ -791,12 +891,26 @@ const drainPendingIntents = async (
       return;
     }
 
-    const batch = await buildCommitBatch(db, claimed);
-    await commitBatch(db, batch);
+    const baseGlobalTail: GlobalTail = {
+      sequence: runtime.globalTail.sequence,
+      hash: runtime.globalTail.hash,
+    };
+    const batch = await buildCommitBatch(db, claimed, baseGlobalTail);
+    await commitBatch(db, batch, baseGlobalTail);
   } catch (error) {
+    const isConflict = isAuditCommitConflictError(error);
     logger.error('[AuditPipeline] flush failed', {
       error: error instanceof Error ? error.message : String(error),
     });
+    if (isConflict) {
+      /**
+       * 逻辑块：多写竞争导致 tail 冲突时，先回源刷新影子 tail，再释放本轮 lease。
+       * 这类冲突属于并发竞争而非数据损坏，不应累计 attempt_count，避免误判为 terminal failure。
+       */
+      runtime.globalTail = await loadGlobalTail(db);
+      runtime.partitionTails = await loadPartitionTails(db);
+      runtime.backlogCount = await collectBacklogCount(db, undefined);
+    }
     const claimed = await getIntentsCollection(db)
       .find({
         status: 'processing',
@@ -807,7 +921,22 @@ const drainPendingIntents = async (
       .toArray();
     for (const intent of claimed) {
       const message = error instanceof Error ? error.message : String(error);
-      await markIntentForRetry(db, intent, message);
+      if (isConflict) {
+        await getIntentsCollection(db).updateOne(
+          { event_id: intent.event_id },
+          {
+            $set: {
+              status: 'pending',
+              updated_at: new Date(),
+              error_last: message,
+              lease_owner: null,
+              lease_until: null,
+            },
+          },
+        );
+      } else {
+        await markIntentForRetry(db, intent, message);
+      }
     }
   } finally {
     runtime.flushing = false;
