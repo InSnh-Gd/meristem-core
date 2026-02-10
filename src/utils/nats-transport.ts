@@ -1,6 +1,14 @@
 import type { NatsConnection } from 'nats';
 import { getNats } from '../nats/connection';
 import type { LogEnvelope, LogLevel } from '@insnh-gd/meristem-shared';
+import {
+  appendEntry,
+  createEntry,
+  createRingBuffer,
+  prependBatch,
+  takeBatch,
+  type BufferedEntry,
+} from './nats-transport-buffer';
 
 const DEFAULT_MAX_BUFFER_BYTES = 5 * 1024 * 1024;
 const DEFAULT_MIN_BATCH_SIZE = 50;
@@ -35,23 +43,6 @@ export type NatsTransport = Readonly<{
   readonly flush: (allowPartial?: boolean) => Promise<void>;
   readonly stop: () => Promise<void>;
   readonly stats: () => TransportStats;
-}>;
-
-type BufferedEntry = Readonly<{
-  readonly subject: string;
-  readonly payload: Uint8Array;
-  readonly size: number;
-}>;
-
-type RingBufferState = Readonly<{
-  readonly entries: readonly BufferedEntry[];
-  readonly totalBytes: number;
-  readonly maxBytes: number;
-}>;
-
-type BufferUpdate = Readonly<{
-  readonly state: RingBufferState;
-  readonly dropped: number;
 }>;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -131,87 +122,12 @@ const resolveSubject = (envelope: LogEnvelope): string => {
   return `${SYSTEM_TOPIC_PREFIX}${envelope.node_id}`;
 };
 
-const createRingBuffer = (maxBytes: number): RingBufferState =>
-  Object.freeze({
-    entries: Object.freeze([]) as readonly BufferedEntry[],
-    totalBytes: 0,
-    maxBytes,
-  });
-
-const sumEntryBytes = (entries: readonly BufferedEntry[]): number => {
-  let total = 0;
-  for (const entry of entries) {
-    total += entry.size;
-  }
-  return total;
-};
-
-const appendEntry = (state: RingBufferState, entry: BufferedEntry): BufferUpdate => {
-  if (entry.size > state.maxBytes) {
-    return { state, dropped: 1 };
-  }
-
-  const combined = [...state.entries, entry];
-  let totalBytes = state.totalBytes + entry.size;
-  let dropCount = 0;
-  let startIndex = 0;
-
-  while (totalBytes > state.maxBytes && startIndex < combined.length) {
-    totalBytes -= combined[startIndex].size;
-    startIndex += 1;
-    dropCount += 1;
-  }
-
-  const entries = startIndex > 0 ? combined.slice(startIndex) : combined;
-  const nextState: RingBufferState = Object.freeze({
-    entries: Object.freeze(entries) as readonly BufferedEntry[],
-    totalBytes,
-    maxBytes: state.maxBytes,
-  });
-
-  return { state: nextState, dropped: dropCount };
-};
-
-const takeBatch = (state: RingBufferState, size: number): { batch: readonly BufferedEntry[]; state: RingBufferState } => {
-  if (state.entries.length === 0 || size <= 0) {
-    return { batch: Object.freeze([]) as readonly BufferedEntry[], state };
-  }
-
-  const batch = state.entries.slice(0, size);
-  const remaining = state.entries.slice(batch.length);
-  const remainingBytes = state.totalBytes - sumEntryBytes(batch);
-  const nextState: RingBufferState = Object.freeze({
-    entries: Object.freeze(remaining) as readonly BufferedEntry[],
-    totalBytes: remainingBytes,
-    maxBytes: state.maxBytes,
-  });
-
-  return { batch: Object.freeze(batch) as readonly BufferedEntry[], state: nextState };
-};
-
-const prependBatch = (state: RingBufferState, batch: readonly BufferedEntry[]): RingBufferState => {
-  if (batch.length === 0) {
-    return state;
-  }
-
-  const entries = [...batch, ...state.entries];
-  const totalBytes = state.totalBytes + sumEntryBytes(batch);
-  return Object.freeze({
-    entries: Object.freeze(entries) as readonly BufferedEntry[],
-    totalBytes,
-    maxBytes: state.maxBytes,
-  });
-};
-
 const clampBatchSize = (value: number, fallback: number): number => {
   if (!Number.isFinite(value) || value <= 0) {
     return fallback;
   }
   return value;
 };
-
-const createEntry = (subject: string, payload: Uint8Array): BufferedEntry =>
-  Object.freeze({ subject, payload, size: payload.byteLength });
 
 export function createNatsTransport(options: NatsTransportOptions = {}): NatsTransport {
   const bufferMaxBytes = options.bufferMaxBytes ?? DEFAULT_MAX_BUFFER_BYTES;
@@ -266,7 +182,7 @@ export function createNatsTransport(options: NatsTransportOptions = {}): NatsTra
     for (let index = 0; index < batch.length; index += 1) {
       const entry = batch[index];
       try {
-        await connection.publish(entry.subject, entry.payload);
+        connection.publish(entry.subject, entry.payload);
       } catch {
         return batch.slice(index);
       }
