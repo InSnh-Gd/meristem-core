@@ -1,7 +1,7 @@
 import { Elysia, t } from 'elysia';
 import { renderDbMetricsPrometheus } from '../db/observability';
 import { requireAuth } from '../middleware/auth';
-import { ensureSuperadminAccess } from './route-auth';
+import { requireSuperadmin } from './route-auth';
 
 const MetricsErrorSchema = t.Object({
   success: t.Literal(false),
@@ -11,12 +11,7 @@ const MetricsErrorSchema = t.Object({
 export const metricsRoute = (app: Elysia): Elysia => {
   app.get(
     '/metrics',
-    ({ set, store }) => {
-      const denied = ensureSuperadminAccess(store, set);
-      if (denied) {
-        return denied;
-      }
-
+    ({ set }) => {
       set.headers['content-type'] = 'text/plain; version=0.0.4; charset=utf-8';
       return renderDbMetricsPrometheus();
     },
@@ -26,7 +21,7 @@ export const metricsRoute = (app: Elysia): Elysia => {
         401: MetricsErrorSchema,
         403: MetricsErrorSchema,
       },
-      beforeHandle: [requireAuth],
+      beforeHandle: [requireAuth, requireSuperadmin],
     },
   );
 
