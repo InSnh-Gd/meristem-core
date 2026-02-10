@@ -21,8 +21,9 @@
 - `benchmark:run:*` 与 `test:run:integration:core` 继续由 `meristem-core` 暴露，便于现有使用习惯平滑迁移。
 
 ### 修正项（Fix）
-- 将 `package.json` 中对 `node_modules/@insnh-gd/meristem-tooling/src/cli.js` 的直连调用替换为 CLI 桥接入口 `src/cli/tooling.ts`。
-- 将 workspace 根目录定位约定收敛到 `MERISTEM_WORKSPACE_ROOT`，并在桥接入口提供默认值。
+- 将 `package.json` 中对 `node_modules/@insnh-gd/meristem-tooling/src/cli.js` 的直连调用替换为包导出 CLI 入口：
+  - `MERISTEM_WORKSPACE_ROOT=.. bun -e "import '@insnh-gd/meristem-tooling/cli'" tooling ...`
+- 将 workspace 根目录定位约定收敛到 `MERISTEM_WORKSPACE_ROOT`，避免依赖本地物理路径。
 
 ### 去耦项（Remove Coupling）
 - 移除对 `node_modules` 物理目录结构的运行时依赖。
