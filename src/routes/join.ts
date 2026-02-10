@@ -290,6 +290,9 @@ export const createNode = async (
  * 纯函数：HWID 亲和性检测
  * 查询数据库，如 HWID 存在则返回现有节点
  *
+ * 逻辑块：支持可选 projection，用于在 join 热路径只读取必要字段。
+ * 默认不传 projection 时保持原行为（返回完整文档），以兼容现有调用与测试。
+ *
  * @param db - MongoDB 数据库实例
  * @param hwid - 硬件唯一指纹
  * @returns 现有节点文档，若不存在则返回 null
@@ -298,10 +301,15 @@ export const recoverNode = async (
   db: Db,
   hwid: string,
   session: DbSession = null,
+  projection?: Record<string, 1>,
 ): Promise<NodeDocument | null> => {
+  const queryOptions = {
+    ...toSessionOption(session),
+    ...(projection ? { projection } : {}),
+  };
   const node = await db
     .collection<NodeDocument>(NODES_COLLECTION)
-    .findOne({ hwid }, toSessionOption(session));
+    .findOne({ hwid }, queryOptions);
   return node;
 };
 
@@ -371,7 +379,15 @@ export const joinRoute = (
         responseData: JoinSuccessData;
         auditEvent: AuditEventInput;
       }> => {
-        const existingNode = await recoverNode(db, hwid, session);
+        /**
+         * 逻辑块：join 热路径只读取恢复判断所需的最小字段。
+         * 通过 projection 降低 BSON 反序列化与对象复制成本，避免把完整 Node 文档拉入事务。
+         */
+        const existingNode = await recoverNode(db, hwid, session, {
+          node_id: 1,
+          org_id: 1,
+          hardware_profile_hash: 1,
+        });
 
         let node_id: string;
         let status: JoinStatus;

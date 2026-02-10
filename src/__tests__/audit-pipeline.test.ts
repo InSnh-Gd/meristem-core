@@ -48,11 +48,34 @@ type CursorLike<T> = {
 const asRecord = (value: unknown): Record<string, unknown> =>
   (typeof value === 'object' && value !== null ? value : {}) as Record<string, unknown>;
 
+const toComparableNumber = (value: unknown): number | null => {
+  if (value instanceof Date) {
+    return value.getTime();
+  }
+  if (typeof value === 'number') {
+    return value;
+  }
+  return null;
+};
+
 const matchesFilter = (doc: Record<string, unknown>, filter?: Record<string, unknown>): boolean => {
   if (!filter) {
     return true;
   }
   for (const [key, condition] of Object.entries(filter)) {
+    if (key === '$or' && Array.isArray(condition)) {
+      const matched = condition.some((entry) => {
+        if (typeof entry !== 'object' || entry === null) {
+          return false;
+        }
+        return matchesFilter(doc, entry as Record<string, unknown>);
+      });
+      if (!matched) {
+        return false;
+      }
+      continue;
+    }
+
     const value = doc[key];
     if (typeof condition === 'object' && condition !== null) {
       const conditionRecord = condition as Record<string, unknown>;
@@ -62,14 +85,25 @@ const matchesFilter = (doc: Record<string, unknown>, filter?: Record<string, unk
         }
         continue;
       }
-      if (typeof conditionRecord.$lt === 'number') {
-        if (typeof value !== 'number' || value >= conditionRecord.$lt) {
+      if (typeof conditionRecord.$exists === 'boolean') {
+        const exists = value !== undefined;
+        if (exists !== conditionRecord.$exists) {
           return false;
         }
         continue;
       }
-      if (typeof conditionRecord.$lte === 'number') {
-        if (typeof value !== 'number' || value > conditionRecord.$lte) {
+      if (conditionRecord.$lt !== undefined) {
+        const left = toComparableNumber(value);
+        const right = toComparableNumber(conditionRecord.$lt);
+        if (left === null || right === null || left >= right) {
+          return false;
+        }
+        continue;
+      }
+      if (conditionRecord.$lte !== undefined) {
+        const left = toComparableNumber(value);
+        const right = toComparableNumber(conditionRecord.$lte);
+        if (left === null || right === null || left > right) {
           return false;
         }
         continue;

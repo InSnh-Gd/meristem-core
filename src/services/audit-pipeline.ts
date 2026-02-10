@@ -3,7 +3,7 @@ import type { ClientSession, Collection, Db } from 'mongodb';
 import { DomainError } from '../errors/domain-error';
 import type { DbSession } from '../db/transactions';
 import { runInTransaction } from '../db/transactions';
-import { createLogger } from '../utils/logger';
+import { createLogger, type Logger } from '../utils/logger';
 import type { TraceContext } from '../utils/trace-context';
 import {
   AUDIT_COLLECTION,
@@ -155,6 +155,7 @@ type PendingCommit = {
 type PipelineRuntime = {
   ready: boolean;
   flushing: boolean;
+  logger: Logger | null;
   traceContext: TraceContext | null;
   nodeId: string;
   options: AuditPipelineOptions;
@@ -182,6 +183,7 @@ const DEFAULT_OPTIONS: AuditPipelineOptions = {
 const runtime: PipelineRuntime = {
   ready: false,
   flushing: false,
+  logger: null,
   traceContext: null,
   nodeId: 'core',
   options: DEFAULT_OPTIONS,
@@ -230,6 +232,25 @@ const isDuplicateKeyError = (error: unknown): boolean => {
   }
   const candidate = error as { code?: unknown };
   return candidate.code === 11000;
+};
+
+const isDuplicateKeyOnlyBulkError = (error: unknown): boolean => {
+  if (typeof error !== 'object' || error === null) {
+    return false;
+  }
+
+  const candidate = error as { writeErrors?: unknown };
+  if (!Array.isArray(candidate.writeErrors) || candidate.writeErrors.length === 0) {
+    return false;
+  }
+
+  return candidate.writeErrors.every((entry) => {
+    if (typeof entry !== 'object' || entry === null) {
+      return false;
+    }
+    const record = entry as { code?: unknown };
+    return record.code === 11000;
+  });
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -526,42 +547,129 @@ const commitBatch = async (
     const intents = getIntentsCollection(db);
     const partitions = getPartitionStateCollection(db);
     const state = getStateCollection(db);
+    const now = new Date();
 
-    for (const item of batch) {
+    /**
+     * 逻辑块：批量写入日志链，显式容忍重复键。
+     * 这是幂等保护的一部分：重试或重复消费时允许 audit_logs 已存在，但不能放大失败面。
+     */
+    if (typeof logs.bulkWrite === 'function') {
       try {
-        await logs.insertOne(item.auditLog, toSessionOption(session));
+        await logs.bulkWrite(
+          batch.map((item) => ({
+            insertOne: { document: item.auditLog },
+          })),
+          { ...toSessionOption(session), ordered: false },
+        );
       } catch (error) {
-        if (!isDuplicateKeyError(error)) {
+        if (!isDuplicateKeyError(error) && !isDuplicateKeyOnlyBulkError(error)) {
           throw error;
         }
       }
-      await intents.updateOne(
-        { event_id: item.intent.event_id },
-        {
-          $set: {
-            status: 'committed',
-            committed_at: new Date(),
-            global_sequence: item.auditLog._sequence,
-            updated_at: new Date(),
-            lease_owner: null,
-            lease_until: null,
-            error_last: undefined,
+    } else {
+      /**
+       * 逻辑块：兼容无 bulkWrite 的测试桩或受限驱动实现。
+       * 在该分支保持旧语义逐条 insert，同时继续容忍重复键。
+       */
+      for (const item of batch) {
+        try {
+          await logs.insertOne(item.auditLog, toSessionOption(session));
+        } catch (error) {
+          if (!isDuplicateKeyError(error)) {
+            throw error;
+          }
+        }
+      }
+    }
+
+    /**
+     * 逻辑块：intent 状态批量推进为 committed。
+     * 使用 $unset 清理 error_last，避免旧错误信息在成功提交后残留。
+     */
+    if (typeof intents.bulkWrite === 'function') {
+      await intents.bulkWrite(
+        batch.map((item) => ({
+          updateOne: {
+            filter: { event_id: item.intent.event_id },
+            update: {
+              $set: {
+                status: 'committed',
+                committed_at: now,
+                global_sequence: item.auditLog._sequence,
+                updated_at: now,
+                lease_owner: null,
+                lease_until: null,
+              },
+              $unset: {
+                error_last: '',
+              },
+            },
           },
-        },
-        toSessionOption(session),
+        })),
+        { ...toSessionOption(session), ordered: false },
       );
-      await partitions.updateOne(
-        { _id: `partition:${item.intent.partition_id}` },
-        {
-          $set: {
-            partition_id: item.intent.partition_id,
-            last_sequence: item.nextPartitionTail.sequence,
-            last_hash: item.nextPartitionTail.hash,
-            updated_at: new Date(),
+    } else {
+      for (const item of batch) {
+        await intents.updateOne(
+          { event_id: item.intent.event_id },
+          {
+            $set: {
+              status: 'committed',
+              committed_at: now,
+              global_sequence: item.auditLog._sequence,
+              updated_at: now,
+              lease_owner: null,
+              lease_until: null,
+            },
+            $unset: {
+              error_last: '',
+            },
           },
-        },
-        { ...toSessionOption(session), upsert: true },
+          toSessionOption(session),
+        );
+      }
+    }
+
+    /**
+     * 逻辑块：按分区聚合尾指针后再 upsert，避免同一批次内重复写同一 partition 文档。
+     */
+    const partitionTailUpdates = new Map<number, PartitionTail>();
+    for (const item of batch) {
+      partitionTailUpdates.set(item.intent.partition_id, item.nextPartitionTail);
+    }
+    if (typeof partitions.bulkWrite === 'function') {
+      await partitions.bulkWrite(
+        [...partitionTailUpdates.entries()].map(([partitionId, tail]) => ({
+          updateOne: {
+            filter: { _id: `partition:${partitionId}` },
+            update: {
+              $set: {
+                partition_id: partitionId,
+                last_sequence: tail.sequence,
+                last_hash: tail.hash,
+                updated_at: now,
+              },
+            },
+            upsert: true,
+          },
+        })),
+        { ...toSessionOption(session), ordered: false },
       );
+    } else {
+      for (const [partitionId, tail] of partitionTailUpdates.entries()) {
+        await partitions.updateOne(
+          { _id: `partition:${partitionId}` },
+          {
+            $set: {
+              partition_id: partitionId,
+              last_sequence: tail.sequence,
+              last_hash: tail.hash,
+              updated_at: now,
+            },
+          },
+          { ...toSessionOption(session), upsert: true },
+        );
+      }
     }
 
     await state.updateOne(
@@ -571,7 +679,7 @@ const commitBatch = async (
           value: nextGlobalTail.sequence,
           global_last_sequence: nextGlobalTail.sequence,
           global_last_hash: nextGlobalTail.hash,
-          updated_at: new Date(),
+          updated_at: now,
         },
         $setOnInsert: {
           _id: AUDIT_STATE_ID,
@@ -582,8 +690,12 @@ const commitBatch = async (
   });
 
   runtime.globalTail = nextGlobalTail;
+  const partitionTailUpdates = new Map<number, PartitionTail>();
   for (const item of batch) {
-    runtime.partitionTails.set(item.intent.partition_id, item.nextPartitionTail);
+    partitionTailUpdates.set(item.intent.partition_id, item.nextPartitionTail);
+  }
+  for (const [partitionId, tail] of partitionTailUpdates.entries()) {
+    runtime.partitionTails.set(partitionId, tail);
   }
   adjustRuntimeBacklog(-batch.length);
 };
@@ -607,19 +719,25 @@ const claimPendingIntents = async (
    */
   let claimCandidates = rows;
   if (claimCandidates.length < runtime.options.batchSize) {
+    /**
+     * 逻辑块：只回收“可判定已过期”的 processing，避免全量拉取 processing 后在 JS 侧过滤。
+     * 这样可以显著降低高并发下 claim 阶段的 CPU 与 Mongo 往返开销。
+     */
     const processing = await collection
-      .find({ status: 'processing' })
+      .find({
+        status: 'processing',
+        $or: [
+          { lease_until: { $lte: now } },
+          { lease_until: null },
+          { lease_until: { $exists: false } },
+        ],
+      })
       .sort({ created_at: 1, event_id: 1 })
+      .limit(runtime.options.batchSize - claimCandidates.length)
       .toArray();
-    const expired = processing.filter((intent) => {
-      if (!(intent.lease_until instanceof Date)) {
-        return true;
-      }
-      return intent.lease_until.getTime() <= now.getTime();
-    });
     claimCandidates = [
       ...claimCandidates,
-      ...expired.slice(0, runtime.options.batchSize - claimCandidates.length),
+      ...processing,
     ];
   }
 
@@ -665,7 +783,8 @@ const drainPendingIntents = async (
     return;
   }
   runtime.flushing = true;
-  const logger = createLogger(traceContext);
+  const logger = runtime.logger ?? createLogger(traceContext);
+  runtime.logger = logger;
   try {
     const claimed = await claimPendingIntents(db);
     if (claimed.length === 0) {
@@ -744,6 +863,7 @@ export const startAuditPipeline = async (
   runtime.options = normalizeOptions(options);
   runtime.traceContext = traceContext;
   runtime.nodeId = traceContext.nodeId;
+  runtime.logger = createLogger(traceContext);
   runtime.globalTail = await loadGlobalTail(db);
   runtime.partitionTails = await loadPartitionTails(db);
   runtime.backlogCount = await collectBacklogCount(db, undefined);
@@ -758,7 +878,8 @@ export const startAuditPipeline = async (
   }
 
   runtime.ready = true;
-  const logger = createLogger(traceContext);
+  const logger = runtime.logger ?? createLogger(traceContext);
+  runtime.logger = logger;
   logger.info('[AuditPipeline] started', {
     partition_count: runtime.options.partitionCount,
     batch_size: runtime.options.batchSize,
@@ -779,6 +900,7 @@ export const stopAuditPipeline = async (): Promise<void> => {
   runtime.anchorTimer = null;
   runtime.ready = false;
   runtime.flushing = false;
+  runtime.logger = null;
   runtime.traceContext = null;
   runtime.globalTail = { sequence: 0, hash: '' };
   runtime.partitionTails = new Map<number, PartitionTail>();
