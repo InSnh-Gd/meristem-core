@@ -12,7 +12,7 @@ import {
   updateRole,
 } from '../services/role';
 import { ensureSuperadminAccess } from './route-auth';
-import { respondWithError } from './route-errors';
+import { respondWithCode, respondWithError } from './route-errors';
 
 const GenericErrorSchema = t.Object({
   success: t.Literal(false),
@@ -72,6 +72,23 @@ const GenericSuccessSchema = t.Object({
   success: t.Literal(true),
 });
 
+type SuperadminGuardContext = {
+  store: Record<string, unknown>;
+  set: {
+    status?: unknown;
+  };
+};
+
+const requireSuperadminAccess = (
+  context: SuperadminGuardContext,
+) => {
+  const denied = ensureSuperadminAccess(context.store, context.set);
+  if (denied) {
+    return denied;
+  }
+  return;
+};
+
 const toRoleView = (role: {
   role_id: string;
   name: string;
@@ -95,12 +112,7 @@ const toRoleView = (role: {
 export const rolesRoute = (app: Elysia, db: Db): Elysia => {
   app.get(
     '/api/v1/roles',
-    async ({ query, set, store }) => {
-      const denied = ensureSuperadminAccess(store, set);
-      if (denied) {
-        return denied;
-      }
-
+    async ({ query, set }) => {
       try {
         const { data, page_info } = await listRoles(db, {
           orgId: query.org_id,
@@ -125,25 +137,16 @@ export const rolesRoute = (app: Elysia, db: Db): Elysia => {
         403: GenericErrorSchema,
         500: GenericErrorSchema,
       },
-      beforeHandle: [requireAuth],
+      beforeHandle: [requireAuth, requireSuperadminAccess],
     },
   );
 
   app.get(
     '/api/v1/roles/:id',
-    async ({ params, set, store }) => {
-      const denied = ensureSuperadminAccess(store, set);
-      if (denied) {
-        return denied;
-      }
-
+    async ({ params, set }) => {
       const role = await findRoleById(db, params.id);
       if (!role) {
-        set.status = 404;
-        return {
-          success: false,
-          error: 'NOT_FOUND',
-        };
+        return respondWithCode(set, 'NOT_FOUND');
       }
       return {
         success: true,
@@ -158,18 +161,13 @@ export const rolesRoute = (app: Elysia, db: Db): Elysia => {
         404: GenericErrorSchema,
         500: GenericErrorSchema,
       },
-      beforeHandle: [requireAuth],
+      beforeHandle: [requireAuth, requireSuperadminAccess],
     },
   );
 
   app.post(
     '/api/v1/roles',
-    async ({ body, set, store }) => {
-      const denied = ensureSuperadminAccess(store, set);
-      if (denied) {
-        return denied;
-      }
-
+    async ({ body, set }) => {
       try {
         const role = await createRole(db, {
           name: body.name,
@@ -195,18 +193,13 @@ export const rolesRoute = (app: Elysia, db: Db): Elysia => {
         409: GenericErrorSchema,
         500: GenericErrorSchema,
       },
-      beforeHandle: [requireAuth],
+      beforeHandle: [requireAuth, requireSuperadminAccess],
     },
   );
 
   app.patch(
     '/api/v1/roles/:id',
-    async ({ params, body, set, store }) => {
-      const denied = ensureSuperadminAccess(store, set);
-      if (denied) {
-        return denied;
-      }
-
+    async ({ params, body, set }) => {
       try {
         const updateInput: UpdateRoleInput = {
           name: body.name,
@@ -215,11 +208,7 @@ export const rolesRoute = (app: Elysia, db: Db): Elysia => {
         };
         const role = await updateRole(db, params.id, updateInput);
         if (!role) {
-          set.status = 404;
-          return {
-            success: false,
-            error: 'NOT_FOUND',
-          };
+          return respondWithCode(set, 'NOT_FOUND');
         }
         return {
           success: true,
@@ -240,26 +229,17 @@ export const rolesRoute = (app: Elysia, db: Db): Elysia => {
         409: GenericErrorSchema,
         500: GenericErrorSchema,
       },
-      beforeHandle: [requireAuth],
+      beforeHandle: [requireAuth, requireSuperadminAccess],
     },
   );
 
   app.delete(
     '/api/v1/roles/:id',
-    async ({ params, set, store }) => {
-      const denied = ensureSuperadminAccess(store, set);
-      if (denied) {
-        return denied;
-      }
-
+    async ({ params, set }) => {
       try {
         const removed = await deleteRole(db, params.id);
         if (!removed) {
-          set.status = 404;
-          return {
-            success: false,
-            error: 'NOT_FOUND',
-          };
+          return respondWithCode(set, 'NOT_FOUND');
         }
         return {
           success: true,
@@ -277,7 +257,7 @@ export const rolesRoute = (app: Elysia, db: Db): Elysia => {
         404: GenericErrorSchema,
         500: GenericErrorSchema,
       },
-      beforeHandle: [requireAuth],
+      beforeHandle: [requireAuth, requireSuperadminAccess],
     },
   );
 

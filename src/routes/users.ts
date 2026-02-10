@@ -156,11 +156,7 @@ export const usersRoute = (app: Elysia, db: Db): Elysia => {
 
       const user = await getUserById(db, params.id);
       if (!user) {
-        set.status = 404;
-        return {
-          success: false,
-          error: 'NOT_FOUND',
-        };
+        return respondWithCode(set, 'NOT_FOUND');
       }
 
       return {
@@ -233,11 +229,7 @@ export const usersRoute = (app: Elysia, db: Db): Elysia => {
           org_id: body.org_id,
         });
         if (!user) {
-          set.status = 404;
-          return {
-            success: false,
-            error: 'NOT_FOUND',
-          };
+          return respondWithCode(set, 'NOT_FOUND');
         }
         return {
           success: true,
@@ -272,11 +264,7 @@ export const usersRoute = (app: Elysia, db: Db): Elysia => {
 
       const removed = await deleteUser(db, params.id);
       if (!removed) {
-        set.status = 404;
-        return {
-          success: false,
-          error: 'NOT_FOUND',
-        };
+        return respondWithCode(set, 'NOT_FOUND');
       }
       return { success: true };
     },
@@ -378,11 +366,7 @@ export const usersRoute = (app: Elysia, db: Db): Elysia => {
       try {
         const user = await assignRoleToUser(db, params.id, body.role_id);
         if (!user) {
-          set.status = 404;
-          return {
-            success: false,
-            error: 'NOT_FOUND',
-          };
+          return respondWithCode(set, 'NOT_FOUND');
         }
         return {
           success: true,
@@ -416,11 +400,7 @@ export const usersRoute = (app: Elysia, db: Db): Elysia => {
 
       const user = await removeRoleFromUser(db, params.id, params.roleId);
       if (!user) {
-        set.status = 404;
-        return {
-          success: false,
-          error: 'NOT_FOUND',
-        };
+        return respondWithCode(set, 'NOT_FOUND');
       }
       return {
         success: true,
