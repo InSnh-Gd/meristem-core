@@ -33,6 +33,7 @@ export interface CoreConfig {
     };
     nats?: {
         stream_replicas?: number;
+        stream_max_bytes?: number;
     };
 }
 
@@ -213,4 +214,32 @@ export function getStreamReplicas(): number {
     }
 
     return 1;
+}
+
+const ONE_GIGABYTE = 1073741824;
+
+/**
+ * Get NATS JetStream stream max bytes.
+ * Priority: NATS_STREAM_MAX_BYTES env var > config.toml [nats].stream_max_bytes > default 1GiB
+ */
+export function getStreamMaxBytes(): number {
+    const envMaxBytes = process.env.NATS_STREAM_MAX_BYTES;
+    if (envMaxBytes !== undefined) {
+        const parsed = parseInt(envMaxBytes, 10);
+        if (!isNaN(parsed) && parsed > 0) {
+            return parsed;
+        }
+    }
+
+    const config = loadConfig();
+    const configMaxBytes = config.nats?.stream_max_bytes;
+    if (
+        configMaxBytes !== undefined &&
+        Number.isFinite(configMaxBytes) &&
+        configMaxBytes > 0
+    ) {
+        return Math.floor(configMaxBytes);
+    }
+
+    return ONE_GIGABYTE;
 }

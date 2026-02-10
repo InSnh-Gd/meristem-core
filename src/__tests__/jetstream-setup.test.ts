@@ -1,9 +1,9 @@
 import { test, expect, mock, beforeEach } from 'bun:test';
 import { setupJetstreamLogs, createLogConsumer } from '../services/jetstream-setup';
 import { getNats, closeNats } from '../nats/connection';
-import { getStreamReplicas } from '../config';
 
 const STREAM_NAME = 'MERISTEM_LOGS';
+const DEFAULT_STREAM_MAX_BYTES = 1073741824;
 
 beforeEach(async () => {
   await closeNats();
@@ -11,13 +11,19 @@ beforeEach(async () => {
 
 test('setupJetstreamLogs creates stream with correct configuration', async () => {
   const mockJsm = {
+    getAccountInfo: mock(async () => ({
+      limits: {
+        max_storage: -1,
+        storage_max_stream_bytes: -1,
+      },
+    })),
     streams: {
       add: mock(async (config: unknown) => {
         expect(config).toMatchObject({
           name: STREAM_NAME,
           subjects: ['meristem.v1.logs.sys.>', 'meristem.v1.logs.task.>'],
           max_age: 604800000000000,
-          max_bytes: 10737418240,
+          max_bytes: DEFAULT_STREAM_MAX_BYTES,
           discard: 'old',
           retention: 'limits',
           num_replicas: 1,
@@ -46,6 +52,50 @@ test('setupJetstreamLogs creates stream with correct configuration', async () =>
 
   mock.module('../config', () => ({
     getStreamReplicas: mock(() => 1),
+    getStreamMaxBytes: mock(() => DEFAULT_STREAM_MAX_BYTES),
+  }));
+
+  const result = await setupJetstreamLogs();
+  expect(result).toBe(true);
+  expect(mockJsm.streams.add).toHaveBeenCalled();
+});
+
+test('setupJetstreamLogs caps stream max_bytes using account limits', async () => {
+  const maxStorage = 4 * 1024 * 1024 * 1024;
+  const perStreamLimit = 256 * 1024 * 1024;
+  const expectedMaxBytes = perStreamLimit;
+  const mockJsm = {
+    getAccountInfo: mock(async () => ({
+      limits: {
+        max_storage: maxStorage,
+        storage_max_stream_bytes: perStreamLimit,
+      },
+    })),
+    streams: {
+      add: mock(async (config: unknown) => {
+        expect((config as { max_bytes: number }).max_bytes).toBe(expectedMaxBytes);
+      }),
+      info: mock(async () => ({
+        config: {
+          subjects: ['meristem.v1.logs.sys.>', 'meristem.v1.logs.task.>'],
+          num_replicas: 1,
+        },
+      })),
+    },
+  };
+
+  const mockNc = {
+    jetstreamManager: mock(async () => mockJsm),
+  };
+
+  mock.module('../nats/connection', () => ({
+    getNats: mock(async () => mockNc),
+    closeNats: mock(async () => {}),
+  }));
+
+  mock.module('../config', () => ({
+    getStreamReplicas: mock(() => 1),
+    getStreamMaxBytes: mock(() => DEFAULT_STREAM_MAX_BYTES),
   }));
 
   const result = await setupJetstreamLogs();
@@ -79,6 +129,7 @@ test('setupJetstreamLogs handles existing stream gracefully', async () => {
 
   mock.module('../config', () => ({
     getStreamReplicas: mock(() => 1),
+    getStreamMaxBytes: mock(() => DEFAULT_STREAM_MAX_BYTES),
   }));
 
   const result = await setupJetstreamLogs();
@@ -100,6 +151,7 @@ test('setupJetstreamLogs returns false on JetStream unavailability', async () =>
 
   mock.module('../config', () => ({
     getStreamReplicas: mock(() => 1),
+    getStreamMaxBytes: mock(() => DEFAULT_STREAM_MAX_BYTES),
   }));
 
   const result = await setupJetstreamLogs();
@@ -132,6 +184,7 @@ test('setupJetstreamLogs uses configured replicas', async () => {
 
   mock.module('../config', () => ({
     getStreamReplicas: mock(() => 3),
+    getStreamMaxBytes: mock(() => DEFAULT_STREAM_MAX_BYTES),
   }));
 
   const result = await setupJetstreamLogs();
