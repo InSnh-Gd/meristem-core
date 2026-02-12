@@ -144,4 +144,61 @@ describe('NATS Transport', () => {
     expect(publishCalls.length).toBe(2);
     expect(transport.stats().jetStreamAvailable).toBe(false);
   });
+
+  it('fragments oversized payload when payload exceeds control-plane budget', async () => {
+    const publishCalls: Array<readonly [string, Uint8Array]> = [];
+    const connection = createConnection(publishCalls, true);
+
+    const transport = createNatsTransport({
+      getConnection: async () => connection,
+      minBatchSize: 1,
+      maxBatchSize: 100,
+      flushIntervalMs: 1000,
+      maxPayloadBytes: 4096,
+      enableFragmentation: true,
+    });
+
+    transport.write(
+      createEnvelope({
+        content: 'x'.repeat(12 * 1024),
+      }),
+    );
+
+    await transport.flush(true);
+
+    expect(publishCalls.length).toBeGreaterThan(1);
+    const firstFragment = JSON.parse(new TextDecoder().decode(publishCalls[0]?.[1] ?? new Uint8Array(0))) as Record<
+      string,
+      unknown
+    >;
+    expect(firstFragment.__meristem_fragment_v).toBe(1);
+    expect(typeof firstFragment.fragment_id).toBe('string');
+    expect(firstFragment.fragment_total).toBe(publishCalls.length);
+    expect(transport.stats().fragmentedCount).toBe(publishCalls.length);
+  });
+
+  it('drops oversized payload when fragmentation is disabled', async () => {
+    const publishCalls: Array<readonly [string, Uint8Array]> = [];
+    const connection = createConnection(publishCalls, true);
+
+    const transport = createNatsTransport({
+      getConnection: async () => connection,
+      minBatchSize: 1,
+      maxBatchSize: 100,
+      flushIntervalMs: 1000,
+      maxPayloadBytes: 1024,
+      enableFragmentation: false,
+    });
+
+    transport.write(
+      createEnvelope({
+        content: 'x'.repeat(8 * 1024),
+      }),
+    );
+
+    await transport.flush(true);
+
+    expect(publishCalls.length).toBe(0);
+    expect(transport.stats().oversizeDropCount).toBe(1);
+  });
 });

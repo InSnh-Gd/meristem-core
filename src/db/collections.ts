@@ -27,6 +27,7 @@ export type NodeNetworkManualOverride = {
 export type NodeNetworkIpShadowLease = {
   reclaim_status: 'ACTIVE' | 'PENDING_RECLAIM' | 'RECLAIMED';
   reclaim_at: Date;
+  reclaim_generation?: number;
 };
 
 export type NodeNetwork = {

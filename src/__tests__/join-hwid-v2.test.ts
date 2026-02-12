@@ -460,3 +460,75 @@ test('joinRoute rejects mismatched hardware_profile_hash when profile is provide
   expect(updates).toHaveLength(0);
 
 });
+
+test('joinRoute rejects reclaimed lease join without matching lease generation', async (): Promise<void> => {
+  const updates: UpdateOperationRecord[] = [];
+  const baselineProfile = createBaselineProfile();
+  const baselineHash = await createHardwareProfileHash(baselineProfile);
+
+  const existingNode: NodeDocument = {
+    node_id: 'node-reclaimed-lease',
+    org_id: 'org-default',
+    hwid: 'f'.repeat(64),
+    hostname: 'reclaimed-node',
+    persona: 'AGENT',
+    role_flags: { is_relay: false, is_storage: false, is_compute: true },
+    network: {
+      virtual_ip: '10.25.10.31',
+      mode: 'DIRECT',
+      v: 7,
+      ip_shadow_lease: {
+        reclaim_status: 'RECLAIMED',
+        reclaim_at: new Date('2026-02-12T00:00:00.000Z'),
+      },
+    },
+    inventory: { cpu_model: 'x', cores: 8, ram_total: 16, os: 'linux', arch: 'x86_64' },
+    status: {
+      online: false,
+      connection_status: 'offline',
+      last_seen: new Date('2026-02-11T00:00:00.000Z'),
+      cpu_usage: 0,
+      ram_free: 0,
+      gpu_info: [],
+    },
+    created_at: new Date('2026-01-01T00:00:00.000Z'),
+    hardware_profile_hash: baselineHash,
+  };
+
+  const nodeCollection: NodeCollectionMock = {
+    findOne: async (): Promise<NodeDocument | null> => existingNode,
+    insertOne: async (): Promise<{ insertedId: string }> => ({ insertedId: 'unused' }),
+    updateOne: async (
+      filter: Record<string, unknown>,
+      update: Record<string, unknown>,
+    ): Promise<{ modifiedCount: number }> => {
+      updates.push({ filter, update });
+      return { modifiedCount: 1 };
+    },
+  };
+
+  const db = createDbMock(nodeCollection);
+  const app = new Elysia();
+  joinRoute(app, db, createAuditLogger([]));
+
+  const response = await app.handle(
+    new Request('http://localhost/api/v1/join', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        hwid: existingNode.hwid,
+        hostname: 'reclaimed-node',
+        persona: 'AGENT',
+        hardware_profile: baselineProfile,
+        hardware_profile_hash: baselineHash,
+      }),
+    }),
+  );
+  const payload = await response.json();
+
+  expect(response.status).toBe(409);
+  expect(payload.success).toBe(false);
+  expect(payload.error).toBe('NETWORK_LEASE_CONFLICT');
+  expect(payload.rollback_hint).toBe('refresh network lease from Core and retry join');
+  expect(updates).toHaveLength(0);
+});

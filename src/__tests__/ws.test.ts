@@ -35,6 +35,7 @@ const allowToken = async (token: string): Promise<WsAuthContext | null> => {
     subject: token,
     permissions: ['node:read'],
     traceId: `trace-${token}`,
+    allowedTopics: ['task.1.status', 'task.eden.status', 'node.a.status'],
   };
 };
 
@@ -185,6 +186,54 @@ test('websocket manager rejects disallowed topic subscription', async (): Promis
     type: 'ERROR',
     code: 'INVALID_TOPIC',
   });
+});
+
+test('websocket manager rejects topic outside allowed topic contract', async (): Promise<void> => {
+  const manager = createWebSocketManager(async (token) =>
+    token === 'valid-token'
+      ? {
+          subject: 'user-1',
+          permissions: ['node:read'],
+          traceId: 'trace-valid-token',
+          allowedTopics: ['task.1.status'],
+        }
+      : null,
+  );
+
+  const client = createMockConnection('c-allowed-topics', 'valid-token');
+
+  expect(await manager.connect(client.connection, 'valid-token')).toBe(true);
+  manager.handleMessage(client.connection, JSON.stringify({ type: 'SUBSCRIBE', topic: 'node.a.status' }));
+
+  expect(JSON.parse(client.sent[1])).toMatchObject({
+    type: 'ERROR',
+    code: 'INVALID_TOPIC',
+  });
+});
+
+test('websocket manager applies stream profile throttling for high-frequency pushes', async (): Promise<void> => {
+  const manager = createWebSocketManager(allowToken);
+  const client = createMockConnection('c-stream-profile', 'valid-stream');
+
+  expect(await manager.connect(client.connection, 'valid-stream')).toBe(true);
+  manager.handleMessage(
+    client.connection,
+    JSON.stringify({
+      type: 'SUBSCRIBE',
+      topic: 'task.1.status',
+      stream_profile: 'conserve',
+    }),
+  );
+
+  expect(JSON.parse(client.sent[1])).toMatchObject({
+    type: 'ACK',
+    action: 'SUBSCRIBE',
+    topic: 'task.1.status',
+    stream_profile: 'conserve',
+  });
+
+  expect(manager.broadcast('task.1.status', { state: 'running' })).toBe(1);
+  expect(manager.broadcast('task.1.status', { state: 'still-running' })).toBe(0);
 });
 
 test('ws handlers auto-subscribe topic from query when eden ws is enabled', async (): Promise<void> => {

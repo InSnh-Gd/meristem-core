@@ -99,6 +99,12 @@ export const JoinRequestBodySchema = t.Object({
       maxLength: 128,
     }),
   ),
+  network_lease_generation: t.Optional(
+    t.Number({
+      description: '节点持有的网络租约代际（用于软回收冲突保护）',
+      minimum: 0,
+    }),
+  ),
 });
 
 /**
@@ -225,6 +231,44 @@ const shouldElideExistingNodeWrite = (
     existingOrgId === input.orgId
   );
 };
+
+const readLeaseReclaimState = (
+  node: NodeDocument,
+): {
+  reclaimStatus?: string;
+  reclaimGeneration?: number;
+} => {
+  const network = (node as NodeDocument & { network?: unknown }).network;
+  if (!isRecord(network)) {
+    return {};
+  }
+
+  const ipShadowLease = network.ip_shadow_lease;
+  if (!isRecord(ipShadowLease)) {
+    return {};
+  }
+
+  const reclaimStatus =
+    typeof ipShadowLease.reclaim_status === 'string'
+      ? ipShadowLease.reclaim_status
+      : undefined;
+  const reclaimGeneration =
+    typeof ipShadowLease.reclaim_generation === 'number'
+      ? ipShadowLease.reclaim_generation
+      : undefined;
+
+  return { reclaimStatus, reclaimGeneration };
+};
+
+class JoinLeaseConflictError extends Error {
+  readonly expectedGeneration?: number;
+
+  constructor(expectedGeneration?: number) {
+    super('NETWORK_LEASE_CONFLICT');
+    this.name = 'JoinLeaseConflictError';
+    this.expectedGeneration = expectedGeneration;
+  }
+}
 
 /**
  * 纯函数：生成 HWID（硬件唯一指纹）
@@ -398,7 +442,15 @@ export const joinRoute = (
         };
       }
 
-      const { hwid, hostname, persona, hardware_profile, hardware_profile_hash, org_id } = body;
+      const {
+        hwid,
+        hostname,
+        persona,
+        hardware_profile,
+        hardware_profile_hash,
+        org_id,
+        network_lease_generation,
+      } = body;
       const incomingHardwareProfile = hardware_profile as NodeHardwareProfile | undefined;
       const incomingOrgId = typeof org_id === 'string' && org_id.length > 0 ? org_id : DEFAULT_ORG_ID;
       const incomingHashResolution = await resolveIncomingHardwareProfileHash(
@@ -441,6 +493,26 @@ export const joinRoute = (
 
         if (existingNode) {
           node_id = existingNode.node_id;
+          const reclaimState = readLeaseReclaimState(existingNode);
+          /**
+           * 逻辑块：软回收冲突保护。
+           * 当 Core 标记该节点租约为 RECLAIMED 时，客户端必须携带匹配的租约代际完成重握手；
+           * 否则拒绝本次接入，避免旧租约在网络分区恢复后覆盖新分配状态。
+           */
+          if (reclaimState.reclaimStatus === 'RECLAIMED') {
+            const incomingGeneration =
+              typeof network_lease_generation === 'number'
+                ? Math.floor(network_lease_generation)
+                : undefined;
+            const expectedGeneration = reclaimState.reclaimGeneration;
+            if (
+              incomingGeneration === undefined ||
+              (typeof expectedGeneration === 'number' && incomingGeneration !== expectedGeneration)
+            ) {
+              throw new JoinLeaseConflictError(expectedGeneration);
+            }
+          }
+
           const baselineHash = existingNode.hardware_profile_hash;
           const driftDetected =
             typeof baselineHash === 'string' &&
@@ -580,6 +652,16 @@ export const joinRoute = (
             return result.responseData;
           });
         } catch (error) {
+          if (error instanceof JoinLeaseConflictError) {
+            set.status = 409;
+            return {
+              success: false,
+              error: 'NETWORK_LEASE_CONFLICT',
+              message: 'IP lease reclaimed, rejoin with latest lease generation',
+              expected_network_lease_generation: error.expectedGeneration ?? null,
+              rollback_hint: 'refresh network lease from Core and retry join',
+            };
+          }
           if (isDomainError(error) && error.code === 'AUDIT_BACKPRESSURE') {
             set.status = 503;
             set.headers['Retry-After'] = '1';
@@ -608,11 +690,30 @@ export const joinRoute = (
          * 兼容路径（测试注入 logger / 管线未就绪）：
          * 先完成 join 主流程，再异步尝试审计写入，避免阻塞节点接入。
          */
-        const result = await executeJoinFlow();
-        responseData = result.responseData;
-        void auditLogger(db, result.auditEvent).catch((auditError) => {
-          console.error('[Audit] failed to log node join', auditError);
-        });
+        try {
+          const result = await executeJoinFlow();
+          responseData = result.responseData;
+          void auditLogger(db, result.auditEvent).catch((auditError) => {
+            console.error('[Audit] failed to log node join', auditError);
+          });
+        } catch (error) {
+          if (error instanceof JoinLeaseConflictError) {
+            set.status = 409;
+            return {
+              success: false,
+              error: 'NETWORK_LEASE_CONFLICT',
+              message: 'IP lease reclaimed, rejoin with latest lease generation',
+              expected_network_lease_generation: error.expectedGeneration ?? null,
+              rollback_hint: 'refresh network lease from Core and retry join',
+            };
+          }
+          console.error('[Join] failed to execute non-transactional join flow', error);
+          set.status = 500;
+          return {
+            success: false,
+            error: 'INTERNAL_ERROR',
+          };
+        }
       }
 
       const response: JoinResponsePayload = {
@@ -632,6 +733,11 @@ export const joinRoute = (
         409: t.Object({
           success: t.Boolean(),
           error: t.String(),
+          message: t.Optional(t.String()),
+          expected_network_lease_generation: t.Optional(
+            t.Union([t.Number(), t.Null()]),
+          ),
+          rollback_hint: t.Optional(t.String()),
         }),
         500: t.Object({
           success: t.Boolean(),
