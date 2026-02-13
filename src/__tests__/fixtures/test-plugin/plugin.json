@@ -1,0 +1,36 @@
+{
+  "id": "com.meristem.test.plugin",
+  "name": "Meristem Test Plugin",
+  "version": "1.0.0",
+  "tier": "extension",
+  "runtime_profile": "sandbox",
+  "sdui_version": "1.0",
+  "dependencies": [],
+  "entry": "src/index.ts",
+  "ui": {
+    "entry": "src/index.ts",
+    "mode": "SDUI",
+    "icon": "test-plugin"
+  },
+  "ui_contract": {
+    "route": "/plugins/test-plugin",
+    "channels": [
+      "task.1.status",
+      "node.a.status"
+    ],
+    "default_log_level": "info",
+    "stream_profile": "balanced"
+  },
+  "permissions": [
+    "node:read",
+    "plugin:access"
+  ],
+  "events": [
+    "node.a.status"
+  ],
+  "exports": [
+    "plugin.b.profile",
+    "plugin.b.slow",
+    "plugin.b.runtime"
+  ]
+}
