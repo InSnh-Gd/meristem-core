@@ -24,6 +24,8 @@ import { wsRoute } from './routes/ws';
 import { traceMiddleware } from './middleware/trace';
 import { usersRoute } from './routes/users';
 import { rolesRoute } from './routes/roles';
+import { createPluginRoutes } from './routes/plugins';
+import { TraceAggregator } from './services/trace-aggregator';
 import { createShutdownLifecycle } from './runtime/shutdown-lifecycle';
 import { startAuditPipeline, stopAuditPipeline } from './services/audit-pipeline';
 
@@ -90,6 +92,8 @@ export const startApp = async (config: AppConfig = {}): Promise<Elysia> => {
 
   await setupJetstreamLogs(initTraceContext);
 
+  const traceAggregator = new TraceAggregator(await connectNats(initTraceContext));
+
   await subscribe(natsTraceContext, 'meristem.v1.hb.>', async (msg) => {
     await handleHeartbeatMessage(db, heartbeatTraceContext, msg);
   });
@@ -111,6 +115,7 @@ export const startApp = async (config: AppConfig = {}): Promise<Elysia> => {
   rolesRoute(app, db);
   tasksRoute(app, db);
   resultsRoute(app, db);
+  app.use(createPluginRoutes(db));
   metricsRoute(app);
   wsRoute(app, {
     wsPath: coreConfig.server.ws_path,
@@ -121,6 +126,9 @@ export const startApp = async (config: AppConfig = {}): Promise<Elysia> => {
   const shutdown = createShutdownLifecycle(initLogger);
   shutdown.addTask('heartbeat-monitor', () => {
     stopHeartbeatMonitor(heartbeatTraceContext);
+  });
+  shutdown.addTask('trace-aggregator', () => {
+    traceAggregator.stop();
   });
   shutdown.addTask('audit-pipeline', async () => {
     await stopAuditPipeline();

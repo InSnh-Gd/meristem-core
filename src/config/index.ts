@@ -6,6 +6,7 @@
 import { parse } from '@iarna/toml';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
+import { randomBytes } from 'crypto';
 import { readJwtRotationStateSync } from './jwt-rotation-store';
 
 export interface CoreConfig {
@@ -26,6 +27,7 @@ export interface CoreConfig {
         access_token_ttl: number;
         refresh_token_ttl: number;
         bootstrap_token_ttl: number;
+        plugin_secret: string;
     };
     logging: {
         level: string;
@@ -154,6 +156,7 @@ export function loadConfig(): CoreConfig {
             access_token_ttl: fileSecurity?.access_token_ttl ?? 3600,
             refresh_token_ttl: fileSecurity?.refresh_token_ttl ?? 604800,
             bootstrap_token_ttl: fileSecurity?.bootstrap_token_ttl ?? 1800,
+            plugin_secret: process.env.MERISTEM_PLUGIN_SECRET ?? fileSecurity?.plugin_secret ?? randomBytes(32).toString('hex'),
         },
         logging: {
             level: process.env.MERISTEM_LOGGING_LEVEL ?? fileConfig.logging?.level ?? 'info',

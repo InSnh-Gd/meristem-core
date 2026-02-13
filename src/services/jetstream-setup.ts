@@ -5,7 +5,7 @@ import { createLogger } from '../utils/logger';
 import { createTraceContext, type TraceContext } from '../utils/trace-context';
 
 const STREAM_NAME = 'MERISTEM_LOGS';
-const LOG_SUBJECTS = ['meristem.v1.logs.sys.>', 'meristem.v1.logs.task.>'];
+const LOG_SUBJECTS = ['meristem.v1.logs.sys.>', 'meristem.v1.logs.task.>', 'meristem.v1.logs.trace.>'];
 
 const SEVEN_DAYS_IN_NANOSECONDS = 604800000000000n;
 const TWO_MINUTES_IN_NANOSECONDS = 120000000000n;
