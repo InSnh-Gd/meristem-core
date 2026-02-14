@@ -20,8 +20,8 @@ type ManagedSubscription = {
  */
 const resolveConfig = (override: Partial<NatsConfig> = {}): NatsConfig => {
   return {
-    servers: override.servers ?? process.env.NATS_URL ?? 'nats://localhost:4222',
-    token: override.token ?? process.env.NATS_TOKEN,
+    servers: override.servers ?? process.env.MERISTEM_NATS_URL ?? 'nats://localhost:4222',
+    token: override.token ?? process.env.MERISTEM_NATS_TOKEN,
     timeout: override.timeout ?? 5000,
   };
 };
