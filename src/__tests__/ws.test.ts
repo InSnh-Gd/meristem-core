@@ -211,6 +211,37 @@ test('websocket manager rejects topic outside allowed topic contract', async ():
   });
 });
 
+test('websocket manager accepts sys.network.mode for sys:manage permission', async (): Promise<void> => {
+  const manager = createWebSocketManager(async (token) =>
+    token === 'valid-sys'
+      ? {
+          subject: 'ops-admin',
+          permissions: ['sys:manage'],
+          traceId: 'trace-valid-sys',
+          allowedTopics: ['sys.network.mode'],
+        }
+      : null,
+  );
+
+  const client = createMockConnection('sys-client', 'valid-sys');
+
+  expect(await manager.connect(client.connection, 'valid-sys')).toBe(true);
+  manager.handleMessage(client.connection, JSON.stringify({ type: 'SUBSCRIBE', topic: 'sys.network.mode' }));
+
+  expect(JSON.parse(client.sent[1])).toMatchObject({
+    type: 'ACK',
+    action: 'SUBSCRIBE',
+    topic: 'sys.network.mode',
+  });
+
+  expect(manager.broadcast('sys.network.mode', { to: 'M-NET' })).toBe(1);
+  expect(JSON.parse(client.sent[2])).toMatchObject({
+    type: 'PUSH',
+    topic: 'sys.network.mode',
+    payload: { to: 'M-NET' },
+  });
+});
+
 test('websocket manager applies stream profile throttling for high-frequency pushes', async (): Promise<void> => {
   const manager = createWebSocketManager(allowToken);
   const client = createMockConnection('c-stream-profile', 'valid-stream');

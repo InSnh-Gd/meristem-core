@@ -80,6 +80,7 @@ type WsRegistrableApp = {
 
 const TOPIC_PATTERN_NODE_STATUS = /^node\.[^.]+\.status$/;
 const TOPIC_PATTERN_TASK_STATUS = /^task\.[^.]+\.status$/;
+const TOPIC_PATTERN_SYSTEM_NETWORK_MODE = /^sys\.network\.mode$/;
 const MESSAGE_DECODER = new TextDecoder();
 const WS_STREAM_PROFILE_PRESETS: Readonly<Record<WsStreamProfilePreset, WsStreamProfile>> = Object.freeze({
   realtime: Object.freeze({
@@ -410,7 +411,11 @@ export const createWebSocketManager = (
       return;
     }
 
-    if (!TOPIC_PATTERN_TASK_STATUS.test(topic) && !TOPIC_PATTERN_NODE_STATUS.test(topic)) {
+    if (
+      !TOPIC_PATTERN_TASK_STATUS.test(topic) &&
+      !TOPIC_PATTERN_NODE_STATUS.test(topic) &&
+      !TOPIC_PATTERN_SYSTEM_NETWORK_MODE.test(topic)
+    ) {
       sendError(ws, 'INVALID_TOPIC', 'Topic is not allowed');
       return;
     }

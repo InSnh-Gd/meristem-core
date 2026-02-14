@@ -28,6 +28,7 @@ import { createPluginRoutes } from './routes/plugins';
 import { TraceAggregator } from './services/trace-aggregator';
 import { createShutdownLifecycle } from './runtime/shutdown-lifecycle';
 import { startAuditPipeline, stopAuditPipeline } from './services/audit-pipeline';
+import { createNetworkModeManager } from './services/network-mode-manager';
 
 export type AppConfig = {
   port?: number;
@@ -121,6 +122,8 @@ export const startApp = async (config: AppConfig = {}): Promise<Elysia> => {
     wsPath: coreConfig.server.ws_path,
     enableEdenSubscribe: flags.ENABLE_EDEN_WS,
   });
+  const networkModeManager = createNetworkModeManager();
+  await networkModeManager.start();
 
   app.listen({ port });
   const shutdown = createShutdownLifecycle(initLogger);
@@ -132,6 +135,9 @@ export const startApp = async (config: AppConfig = {}): Promise<Elysia> => {
   });
   shutdown.addTask('audit-pipeline', async () => {
     await stopAuditPipeline();
+  });
+  shutdown.addTask('network-mode-manager', () => {
+    networkModeManager.stop();
   });
   shutdown.addTask('nats-connection', async () => {
     await closeNats(natsTraceContext);

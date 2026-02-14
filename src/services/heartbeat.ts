@@ -28,6 +28,7 @@ type HeartbeatAck = {
  */
 const HEARTBEAT_INTERVAL_MS = 15000; // 15s 心跳周期
 const OFFLINE_THRESHOLD_MS = 45000; // 45s 离线阈值 (3 × Heartbeat)
+const LEASE_RECLAIM_THRESHOLD_MS = 30 * 24 * 60 * 60 * 1000;
 const DEFAULT_SPS = 1280; // 默认安全负载大小（Lv2 UDP Relay）
 
 const formatError = (error: unknown): string =>
@@ -109,6 +110,30 @@ export const checkNodeOffline = async (
 
   if (result.modifiedCount > 0) {
     logger.info(`[Heartbeat] 标记 ${result.modifiedCount} 个节点为离线`);
+  }
+
+  const reclaimThreshold = new Date(Date.now() - LEASE_RECLAIM_THRESHOLD_MS);
+  const reclaimResult = await nodesCollection.updateMany(
+    {
+      'status.online': false,
+      'status.last_seen': { $lt: reclaimThreshold },
+      'status.connection_status': { $ne: 'expired_credentials' },
+      'network.ip_shadow_lease': { $exists: true },
+    },
+    {
+      $set: {
+        'status.connection_status': 'expired_credentials',
+        'network.ip_shadow_lease.reclaim_status': 'RECLAIMED',
+        'network.ip_shadow_lease.reclaim_at': new Date(),
+      },
+      $inc: {
+        'network.ip_shadow_lease.reclaim_generation': 1,
+      },
+    }
+  );
+
+  if (reclaimResult.modifiedCount > 0) {
+    logger.info(`[Heartbeat] 软回收凭据失效节点 ${reclaimResult.modifiedCount} 个`);
   }
 
   // 返回离线节点 ID 列表（用于日志或通知）

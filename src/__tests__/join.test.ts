@@ -150,6 +150,7 @@ test('joinRoute logs audit event for new nodes', async (): Promise<void> => {
   expect(payload.success).toBe(true);
   expect(payload.data.status).toBe('new');
   expect(payload.data.node_id).toBeDefined();
+  expect(payload.data.core_ip_v6).toBe('fd7a:115c:a1e0::1');
   expect(recordedNodes).toHaveLength(1);
   expect(recordedNodes[0].hwid).toBe(newNodeHwid);
   expect(auditEvents).toHaveLength(1);

@@ -19,6 +19,11 @@ import { recordAuditEvent, isAuditPipelineReady } from '../services/audit-pipeli
 import type { DbSession } from '../db/transactions';
 import { runInTransaction } from '../db/transactions';
 import { isDomainError } from '../errors/domain-error';
+import {
+  getPluginRegistry,
+  invokePluginMethod,
+  isPluginResponsive,
+} from '../services/plugin-lifecycle';
 
 /**
  * Persona 类型定义：节点角色标识
@@ -28,6 +33,7 @@ import { isDomainError } from '../errors/domain-error';
 export type Persona = NodePersona;
 
 const HARDWARE_HASH_PATTERN = /^[a-f0-9]{64}$/;
+const CORE_IP_V6_DEFAULT = 'fd7a:115c:a1e0::1';
 
 const HardwareProfileSchema = t.Object({
   cpu: t.Optional(
@@ -121,11 +127,133 @@ export const JoinResponseBodySchema = t.Object({
       description: 'Core 虚拟 IP 地址',
       pattern: '^10\\.25\\.',
     }),
+    core_ip_v6: t.Optional(
+      t.String({
+        description: 'Core 虚拟 IPv6 地址',
+      }),
+    ),
+    network_mode: t.Optional(
+      t.Union([t.Literal('DIRECT'), t.Literal('M-NET')], {
+        description: '网络模式：DIRECT 或 M-NET',
+      }),
+    ),
+    auth_key: t.Optional(
+      t.String({
+        description: 'M-Net AuthKey（仅 M-NET 模式）',
+      }),
+    ),
+    derp_map: t.Optional(
+      t.Object({
+        Regions: t.Record(t.String(), t.Unknown()),
+      }),
+    ),
     status: t.Union([t.Literal('new'), t.Literal('existing'), t.Literal('pending_approval')], {
       description: '节点状态：new=新节点，existing=恢复身份，pending_approval=硬件漂移待审批',
     }),
   }),
 });
+
+const parseNetworkMode = (value: unknown): 'DIRECT' | 'M-NET' | null => {
+  if (value === 'DIRECT' || value === 'M-NET') {
+    return value;
+  }
+
+  return null;
+};
+
+const parseAuthKey = (value: unknown): string | undefined => {
+  if (typeof value === 'string' && value.length > 0) {
+    return value;
+  }
+
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  if (typeof value.auth_key === 'string' && value.auth_key.length > 0) {
+    return value.auth_key;
+  }
+
+  if (typeof value.key === 'string' && value.key.length > 0) {
+    return value.key;
+  }
+
+  return undefined;
+};
+
+const parseDerpMap = (value: unknown): { Regions: Record<string, unknown> } | undefined => {
+  if (!isRecord(value) || !isRecord(value.Regions)) {
+    return undefined;
+  }
+
+  return {
+    Regions: value.Regions,
+  };
+};
+
+const resolveOverlayProvider = (): string | null => {
+  for (const [pluginId, lifecycle] of getPluginRegistry()) {
+    if (!lifecycle.manifest.exports.includes('network-mode-status')) {
+      continue;
+    }
+
+    if (lifecycle.state !== 'RUNNING') {
+      continue;
+    }
+
+    if (!isPluginResponsive(pluginId)) {
+      continue;
+    }
+
+    return pluginId;
+  }
+
+  return null;
+};
+
+const resolveJoinOverlayData = async (nodeId: string): Promise<Record<string, unknown>> => {
+  const provider = resolveOverlayProvider();
+  if (!provider) {
+    return {
+      core_ip_v6: CORE_IP_V6_DEFAULT,
+      network_mode: 'DIRECT',
+    };
+  }
+
+  const modeResult = await invokePluginMethod(
+    provider,
+    'network-mode-status',
+    { node_id: nodeId },
+    2000,
+  );
+  if (!modeResult.success) {
+    return {
+      core_ip_v6: CORE_IP_V6_DEFAULT,
+      network_mode: 'DIRECT',
+    };
+  }
+
+  const modePayload = isRecord(modeResult.data) ? modeResult.data : {};
+  const networkMode = parseNetworkMode(modePayload.mode ?? modePayload.desired_mode);
+  if (networkMode !== 'M-NET') {
+    return {
+      core_ip_v6: CORE_IP_V6_DEFAULT,
+      network_mode: 'DIRECT',
+    };
+  }
+
+  const [authResult, derpResult] = await Promise.all([
+    invokePluginMethod(provider, 'network-authkey', { node_id: nodeId }, 2000),
+    invokePluginMethod(provider, 'network-derp-map', { node_id: nodeId }, 2000),
+  ]);
+
+  return {
+    core_ip_v6: CORE_IP_V6_DEFAULT,
+    network_mode: 'M-NET',
+    auth_key: authResult.success ? parseAuthKey(authResult.data) : undefined,
+    derp_map: derpResult.success ? parseDerpMap(derpResult.data) : undefined,
+  };
+};
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -627,11 +755,14 @@ export const joinRoute = (
           meta: auditMeta,
         };
 
+        const overlayData = await resolveJoinOverlayData(node_id);
+
         return {
           responseData: {
             node_id,
             core_ip: '10.25.0.1',
             status,
+            ...overlayData,
           },
           auditEvent,
         };

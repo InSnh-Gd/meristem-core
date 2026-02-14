@@ -23,7 +23,7 @@ import {
   EventBridge,
   type PluginContext,
 } from './plugin-bridge';
-import { HealthMonitor } from './plugin-health';
+import { HealthMonitor, type HealthStatus } from './plugin-health';
 import { createTraceContext, type TraceContext } from '../utils/trace-context';
 import { subscribe as subscribeNats } from '../nats/connection';
 
@@ -72,6 +72,10 @@ export type PluginLifecycleManagerOptions = {
   natsSubscribe?: typeof subscribeNats;
   createPluginTraceContext?: (pluginId: string) => TraceContext;
 };
+
+export type InvokePluginMethodResult =
+  | { success: true; data: unknown }
+  | { success: false; error: string };
 
 type TransitionPair = `${LifecycleState}->${LifecycleState}`;
 
@@ -186,6 +190,14 @@ export class PluginLifecycleManager {
 
   public getState(pluginId: string): LifecycleState {
     return this.manage(pluginId).state;
+  }
+
+  public getHealth(pluginId: string): HealthStatus {
+    return this.healthMonitor.getHealth(pluginId);
+  }
+
+  public isResponsive(pluginId: string): boolean {
+    return this.healthMonitor.isResponsive(pluginId);
   }
 
   /**
@@ -412,11 +424,11 @@ export class PluginLifecycleManager {
 
   private async invokeHook(
     pluginId: string,
-    method: 'onInit' | 'onStart' | 'onStop' | 'onDestroy',
+    method: string,
     params: unknown,
     timeoutMs = STOP_TIMEOUT_MS,
     workerOverride?: Worker,
-  ): Promise<void> {
+  ): Promise<unknown> {
     const worker = workerOverride ?? this.manage(pluginId).worker;
     if (!worker) {
       throw new Error(`Plugin ${pluginId} has no running isolate`);
@@ -438,7 +450,7 @@ export class PluginLifecycleManager {
     );
 
     if (!isInvokeResponse(response.payload)) {
-      return;
+      return undefined;
     }
 
     if (!response.payload.success) {
@@ -447,6 +459,8 @@ export class PluginLifecycleManager {
           `Plugin ${pluginId} hook ${method} failed without reason`,
       );
     }
+
+    return response.payload.data;
   }
 
   /**
@@ -607,6 +621,43 @@ export class PluginLifecycleManager {
       return { success: false, error: lifecycle.error };
     }
   }
+
+  public async invoke(
+    pluginId: string,
+    method: string,
+    params: unknown,
+    timeoutMs = RELOAD_STARTUP_TIMEOUT_MS,
+  ): Promise<InvokePluginMethodResult> {
+    let lifecycle: PluginLifecycle;
+    try {
+      lifecycle = this.manage(pluginId);
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+
+    if (lifecycle.state !== 'RUNNING') {
+      return {
+        success: false,
+        error: `Plugin ${pluginId} is not running`,
+      };
+    }
+
+    try {
+      const data = await this.invokeHook(pluginId, method, params, timeoutMs);
+      return {
+        success: true,
+        data,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
 }
 
 export const createLifecycleManager = (
@@ -653,6 +704,23 @@ export function getPluginRegistry(): ReadonlyMap<string, PluginLifecycle> {
 
 export function getPluginInstance(pluginId: string): PluginLifecycle | undefined {
   return pluginRegistry.get(pluginId);
+}
+
+export function getPluginHealthStatus(pluginId: string): HealthStatus {
+  return lifecycleManager.getHealth(pluginId);
+}
+
+export function isPluginResponsive(pluginId: string): boolean {
+  return lifecycleManager.isResponsive(pluginId);
+}
+
+export async function invokePluginMethod(
+  pluginId: string,
+  method: string,
+  params: unknown,
+  timeoutMs?: number,
+): Promise<InvokePluginMethodResult> {
+  return lifecycleManager.invoke(pluginId, method, params, timeoutMs);
 }
 
 export function parseManifest(manifestJson: string): LoadPluginResult {
