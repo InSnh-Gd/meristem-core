@@ -29,6 +29,8 @@ import { TraceAggregator } from './services/trace-aggregator';
 import { createShutdownLifecycle } from './runtime/shutdown-lifecycle';
 import { startAuditPipeline, stopAuditPipeline } from './services/audit-pipeline';
 import { createNetworkModeManager } from './services/network-mode-manager';
+import { ensureMeristemHomeLayout } from './runtime/paths';
+import { resolveRuntimeMode, type RuntimeMode } from './runtime/mode';
 
 export type AppConfig = {
   port?: number;
@@ -36,6 +38,8 @@ export type AppConfig = {
   healthRoute?: string;
   metadata?: Record<string, unknown>;
   installSignalHandlers?: boolean;
+  homePath?: string;
+  runtimeMode?: RuntimeMode;
 };
 
 const DEFAULT_PORT = 3000;
@@ -62,6 +66,11 @@ export const createApp = (config: AppConfig = {}): Elysia => {
  * 纯函数化启动逻辑，确保在不同环境中也能一致配置
  */
 export const startApp = async (config: AppConfig = {}): Promise<Elysia> => {
+  const runtimeMode = resolveRuntimeMode(config.runtimeMode);
+  process.env.MERISTEM_RUNTIME_MODE = runtimeMode;
+  const homePaths = runtimeMode === 'production'
+    ? ensureMeristemHomeLayout(config.homePath)
+    : undefined;
   const port = resolvePort(config);
   const coreConfig = loadConfig();
   const flags = resolveFeatureFlags();
@@ -71,6 +80,10 @@ export const startApp = async (config: AppConfig = {}): Promise<Elysia> => {
     source: 'bootstrap',
   });
   const initLogger = createLogger(initTraceContext);
+  initLogger.info(`[Runtime] mode=${runtimeMode}`);
+  if (homePaths) {
+    initLogger.info(`[Runtime] meristem_home=${homePaths.home}`);
+  }
   const nodeId = config.nodeId ?? 'core';
   const natsTraceContext = createTraceContext({
     traceId: 'system',
@@ -155,5 +168,5 @@ export const startApp = async (config: AppConfig = {}): Promise<Elysia> => {
 };
 
 if (import.meta.main) {
-  void startApp();
+  void startApp({ runtimeMode: 'development' });
 }
