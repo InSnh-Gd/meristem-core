@@ -32,12 +32,34 @@ const printHelp = (): void => {
 Meristem Core CLI
 
 Usage:
-  meristem [--home <path>] core start
-  meristem [--home <path>] plugin refresh [--registry-url <url-or-file>]
-  meristem [--home <path>] plugin list --available|--installed [--registry-url <url-or-file>]
-  meristem [--home <path>] plugin sync [--plugin <id>] [--ref <git-ref>] [--required]
-  meristem [--home <path>] plugin update --all|--plugin <id> [--registry-url <url-or-file>]
-  meristem [--home <path>] plugin doctor
+  meristem-core [--home <path>] core start
+  meristem-core [--home <path>] serve
+  meristem-core [--home <path>] plugin <action> [...]
+
+Pacman-like plugin commands:
+  meristem-core [--home <path>] -Sy
+    refresh plugin registry cache
+
+  meristem-core [--home <path>] -Ss [keyword]
+    list/search available plugins from registry
+
+  meristem-core [--home <path>] -S <pluginId> [--ref <git-ref>]
+    install/sync one plugin
+
+  meristem-core [--home <path>] -S --required
+    sync required plugins (enabled_by_default=true)
+
+  meristem-core [--home <path>] -Su
+    update all installed plugins
+
+  meristem-core [--home <path>] -Syu
+    refresh registry then update all installed plugins
+
+  meristem-core [--home <path>] -Q
+    list installed plugins (from lock file)
+
+  meristem-core [--home <path>] -Qk
+    doctor check installed plugins
 `);
 };
 
@@ -85,6 +107,19 @@ const parseBooleanFlag = (args: string[], flag: string): boolean => {
   }
   args.splice(index, 1);
   return true;
+};
+
+const takePositionals = (args: string[]): string[] => {
+  const positionals: string[] = [];
+  while (args.length > 0) {
+    const token = args[0];
+    if (!token || token.startsWith('-')) {
+      break;
+    }
+    positionals.push(token);
+    args.shift();
+  }
+  return positionals;
 };
 
 const assertNoUnknownArgs = (args: readonly string[]): void => {
@@ -182,6 +217,124 @@ const runCoreCommand = async (
   await startApp({ homePath: homeResult.home, runtimeMode: 'production' });
 };
 
+const runServeCommand = async (home: string | undefined): Promise<void> => {
+  await runCoreCommand(home, ['start']);
+};
+
+/**
+ * 逻辑块：Pacman 风格命令适配层。
+ * - 目的：提供 `-S/-Ss/-Sy/-Su/-Q/-Qk` 操作语义，降低插件管理心智负担。
+ * - 原因：生产侧希望统一为包管理器式短命令入口，同时保持现有长命令兼容。
+ * - 失败路径：未知操作或参数冲突直接返回 usage error（exit 2），避免隐式执行错误动作。
+ */
+const runPacmanCommand = async (
+  home: string | undefined,
+  args: readonly string[],
+): Promise<void> => {
+  const [operation, ...restInput] = args;
+  if (!operation) {
+    throw new CliUsageError('missing operation');
+  }
+
+  const rest = [...restInput];
+  const registryUrl = parseFlagValue(rest, '--registry-url');
+  const ref = parseFlagValue(rest, '--ref');
+  const required = parseBooleanFlag(rest, '--required');
+  const positionals = takePositionals(rest);
+  assertNoUnknownArgs(rest);
+
+  if (operation === '-Sy') {
+    const result = await refreshPluginRegistry({ home, registryUrl });
+    console.log(`[registry] source=${result.source}`);
+    console.log(`[registry] cache=${result.cachePath}`);
+    console.log(`[registry] count=${result.pluginCount}`);
+    return;
+  }
+
+  if (operation === '-Ss') {
+    if (positionals.length > 1) {
+      throw new CliUsageError('-Ss accepts at most one keyword');
+    }
+    const keyword = positionals[0]?.toLowerCase();
+    const plugins = await listAvailablePlugins({ home, registryUrl });
+    const filtered = keyword
+      ? plugins.filter((plugin) =>
+        plugin.id.toLowerCase().includes(keyword)
+        || plugin.name.toLowerCase().includes(keyword))
+      : plugins;
+    console.log(JSON.stringify(filtered, null, 2));
+    return;
+  }
+
+  if (operation === '-S') {
+    if (required && positionals.length > 0) {
+      throw new CliUsageError('-S --required cannot be combined with plugin id');
+    }
+    if (!required && positionals.length !== 1) {
+      throw new CliUsageError('-S requires exactly one plugin id, or use --required');
+    }
+    const synced = await syncPlugins({
+      home,
+      registryUrl,
+      pluginId: required ? undefined : positionals[0],
+      ref,
+      requiredOnly: required,
+    });
+    console.log(JSON.stringify(synced, null, 2));
+    return;
+  }
+
+  if (operation === '-Su') {
+    if (positionals.length > 0) {
+      throw new CliUsageError('-Su does not accept plugin id, use -S <pluginId> for single plugin sync');
+    }
+    const updated = await updatePlugins({
+      home,
+      registryUrl,
+      all: true,
+    });
+    console.log(JSON.stringify(updated, null, 2));
+    return;
+  }
+
+  if (operation === '-Syu') {
+    if (positionals.length > 0) {
+      throw new CliUsageError('-Syu does not accept plugin id');
+    }
+    await refreshPluginRegistry({ home, registryUrl });
+    const updated = await updatePlugins({
+      home,
+      registryUrl,
+      all: true,
+    });
+    console.log(JSON.stringify(updated, null, 2));
+    return;
+  }
+
+  if (operation === '-Q') {
+    if (positionals.length > 0) {
+      throw new CliUsageError('-Q does not accept positional arguments');
+    }
+    const installed = listInstalledPlugins({ home });
+    console.log(JSON.stringify(installed, null, 2));
+    return;
+  }
+
+  if (operation === '-Qk') {
+    if (positionals.length > 0) {
+      throw new CliUsageError('-Qk does not accept positional arguments');
+    }
+    const report = doctorPlugins({ home });
+    console.log(JSON.stringify(report, null, 2));
+    if (!report.ok) {
+      throw new Error(`plugin doctor found ${report.issues.length} issue(s)`);
+    }
+    return;
+  }
+
+  throw new CliUsageError(`unknown pacman operation: ${operation}`);
+};
+
 const run = async (): Promise<void> => {
   const parsed = parseGlobal(process.argv.slice(2));
   const [domain, ...rest] = parsed.command;
@@ -195,6 +348,16 @@ const run = async (): Promise<void> => {
     return;
   }
 
+  if (domain === 'serve') {
+    await runServeCommand(parsed.home);
+    return;
+  }
+
+  if (domain.startsWith('-')) {
+    await runPacmanCommand(parsed.home, [domain, ...rest]);
+    return;
+  }
+
   if (domain === 'core') {
     await runCoreCommand(parsed.home, rest);
     return;
@@ -205,12 +368,12 @@ const run = async (): Promise<void> => {
 
 run().catch((error: unknown) => {
   if (error instanceof CliUsageError) {
-    console.error(`[meristem] ${error.message}`);
+    console.error(`[meristem-core] ${error.message}`);
     process.exit(error.exitCode);
     return;
   }
 
   const message = error instanceof Error ? error.message : String(error);
-  console.error(`[meristem] failed: ${message}`);
+  console.error(`[meristem-core] failed: ${message}`);
   process.exit(1);
 });
