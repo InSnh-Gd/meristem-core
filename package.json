@@ -2,10 +2,22 @@
   "name": "meristem-core",
   "version": "0.1.0",
   "type": "module",
+  "bin": {
+    "meristem": "dist/meristem"
+  },
   "scripts": {
     "dev": "bun run --watch src/index.ts",
-    "start": "bun run src/index.ts",
+    "start": "bun run src/cli/meristem.ts core start",
     "build": "bun build src/index.ts --outdir dist --target bun",
+    "build:meta": "bun run scripts/write-build-meta.ts",
+    "build:bin": "bun run build:meta && bun build --compile src/cli/meristem.ts --outfile dist/meristem",
+    "cli": "bun run src/cli/meristem.ts",
+    "plugin:refresh": "bun run src/cli/meristem.ts plugin refresh",
+    "plugin:list:available": "bun run src/cli/meristem.ts plugin list --available",
+    "plugin:list:installed": "bun run src/cli/meristem.ts plugin list --installed",
+    "plugin:sync": "bun run src/cli/meristem.ts plugin sync",
+    "plugin:update:all": "bun run src/cli/meristem.ts plugin update --all",
+    "plugin:doctor": "bun run src/cli/meristem.ts plugin doctor",
     "typecheck:run:stable": "tsc --noEmit -p tsconfig.json",
     "typecheck:run:next": "bun run src/cli/typecheck-next.ts",
     "runtime:run:check": "bun run src/cli/runtime-check.ts",

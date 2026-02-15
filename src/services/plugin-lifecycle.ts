@@ -1,4 +1,6 @@
 import type { Db } from 'mongodb';
+import { existsSync, statSync } from 'fs';
+import { extname, isAbsolute, join, resolve, sep } from 'path';
 import type {
   PluginManifest,
   ManifestValidationResult,
@@ -742,6 +744,80 @@ export function parseManifest(manifestJson: string): LoadPluginResult {
   return { success: true, manifest: manifest as PluginManifest };
 }
 
+const FILE_PATH_EXTENSIONS = new Set(['.ts', '.mts', '.cts', '.js', '.mjs', '.cjs']);
+
+const isLikelyFilePath = (value: string): boolean => {
+  const ext = extname(value).toLowerCase();
+  if (FILE_PATH_EXTENSIONS.has(ext)) {
+    return true;
+  }
+
+  if (!existsSync(value)) {
+    return false;
+  }
+
+  try {
+    return statSync(value).isFile();
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * 逻辑块：插件入口路径统一解析。
+ * - 目的：兼容“直接传入口文件”和“传插件目录 + manifest.entry”两种调用方式。
+ * - 原因：现有测试传文件路径，生产安装通常传目录；统一收敛可避免调用方分叉。
+ * - 失败路径：路径穿越、绝对 entry、入口文件不存在都会返回错误并阻断加载。
+ */
+export const resolvePluginEntryPath = (
+  pluginPath: string,
+  manifest: PluginManifest,
+): { success: true; entryPath: string } | { success: false; error: string } => {
+  if (!pluginPath || pluginPath.trim().length === 0) {
+    return { success: false, error: 'plugin path is empty' };
+  }
+
+  const normalizedPluginPath = resolve(pluginPath);
+  if (isLikelyFilePath(normalizedPluginPath)) {
+    if (!existsSync(normalizedPluginPath)) {
+      return {
+        success: false,
+        error: `plugin entry does not exist: ${normalizedPluginPath}`,
+      };
+    }
+    return { success: true, entryPath: normalizedPluginPath };
+  }
+
+  if (isAbsolute(manifest.entry)) {
+    return {
+      success: false,
+      error: `manifest entry must be relative: ${manifest.entry}`,
+    };
+  }
+
+  const normalizedEntry = manifest.entry.replace(/^\.(?:[\\/])+/u, '');
+  const resolvedEntryPath = resolve(normalizedPluginPath, normalizedEntry);
+  const expectedPrefix = `${normalizedPluginPath}${sep}`;
+  if (
+    resolvedEntryPath !== normalizedPluginPath
+    && !resolvedEntryPath.startsWith(expectedPrefix)
+  ) {
+    return {
+      success: false,
+      error: `manifest entry escapes plugin root: ${manifest.entry}`,
+    };
+  }
+
+  if (!existsSync(resolvedEntryPath)) {
+    return {
+      success: false,
+      error: `plugin entry does not exist: ${resolvedEntryPath}`,
+    };
+  }
+
+  return { success: true, entryPath: resolvedEntryPath };
+};
+
 export async function loadPlugin(
   db: Db,
   manifest: PluginManifest,
@@ -750,6 +826,11 @@ export async function loadPlugin(
   pluginDb = db;
   if (pluginRegistry.has(manifest.id)) {
     return { success: false, error: `Plugin ${manifest.id} is already loaded` };
+  }
+
+  const resolvedEntry = resolvePluginEntryPath(pluginPath, manifest);
+  if (!resolvedEntry.success) {
+    return { success: false, error: resolvedEntry.error };
   }
 
   const doc: PluginDocument = {
@@ -784,7 +865,7 @@ export async function loadPlugin(
     manifest,
     state: 'LOADED',
     config: {},
-    entryPath: pluginPath,
+    entryPath: resolvedEntry.entryPath,
     isolateId: manifest.id,
     configVersion: 1,
   });
@@ -1003,7 +1084,7 @@ export async function loadAllPluginsInOrder(
       continue;
     }
 
-    const result = await loadPlugin(db, manifest, `${pluginBasePath}/${pluginId}`);
+    const result = await loadPlugin(db, manifest, join(pluginBasePath, pluginId));
     if (result.success) {
       loaded.push(pluginId);
     } else {

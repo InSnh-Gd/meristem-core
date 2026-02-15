@@ -5,3 +5,8 @@ dist/
 .env.local
 AGENTS.md
 CLAUDE.md
+plugins/*
+registry/
+logs/
+data/
+cache/

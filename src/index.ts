@@ -29,6 +29,7 @@ import { TraceAggregator } from './services/trace-aggregator';
 import { createShutdownLifecycle } from './runtime/shutdown-lifecycle';
 import { startAuditPipeline, stopAuditPipeline } from './services/audit-pipeline';
 import { createNetworkModeManager } from './services/network-mode-manager';
+import { ensureMeristemHomeLayout } from './runtime/paths';
 
 export type AppConfig = {
   port?: number;
@@ -36,6 +37,7 @@ export type AppConfig = {
   healthRoute?: string;
   metadata?: Record<string, unknown>;
   installSignalHandlers?: boolean;
+  homePath?: string;
 };
 
 const DEFAULT_PORT = 3000;
@@ -62,6 +64,7 @@ export const createApp = (config: AppConfig = {}): Elysia => {
  * 纯函数化启动逻辑，确保在不同环境中也能一致配置
  */
 export const startApp = async (config: AppConfig = {}): Promise<Elysia> => {
+  const homePaths = ensureMeristemHomeLayout(config.homePath);
   const port = resolvePort(config);
   const coreConfig = loadConfig();
   const flags = resolveFeatureFlags();
@@ -71,6 +74,7 @@ export const startApp = async (config: AppConfig = {}): Promise<Elysia> => {
     source: 'bootstrap',
   });
   const initLogger = createLogger(initTraceContext);
+  initLogger.info(`[Runtime] meristem_home=${homePaths.home}`);
   const nodeId = config.nodeId ?? 'core';
   const natsTraceContext = createTraceContext({
     traceId: 'system',

@@ -8,6 +8,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { randomBytes } from 'crypto';
 import { readJwtRotationStateSync } from './jwt-rotation-store';
+import { resolveMeristemPaths } from '../runtime/paths';
 
 export interface CoreConfig {
     server: {
@@ -40,9 +41,22 @@ export interface CoreConfig {
 }
 
 const CONFIG_PATHS = [
-    './config.toml',
     '/etc/meristem/config.toml',
 ];
+
+const resolveConfigPaths = (): readonly string[] => {
+    const explicitPath = process.env.MERISTEM_CONFIG_PATH;
+    if (explicitPath && explicitPath.trim().length > 0) {
+        return [explicitPath.trim()];
+    }
+
+    const paths = resolveMeristemPaths();
+    return [
+        join(paths.home, 'config.toml'),
+        './config.toml',
+        ...CONFIG_PATHS,
+    ];
+};
 
 const parseSecretList = (value: string | undefined): string[] => {
     if (!value) {
@@ -91,9 +105,10 @@ const normalizeVerifySecrets = (
  */
 export function loadConfig(): CoreConfig {
     let configPath: string | null = null;
+    const configPaths = resolveConfigPaths();
 
     // 查找配置文件
-    for (const path of CONFIG_PATHS) {
+    for (const path of configPaths) {
         if (existsSync(path)) {
             configPath = path;
             break;
@@ -107,10 +122,11 @@ export function loadConfig(): CoreConfig {
     }
 
     const fileSecurity = fileConfig.security;
+    const paths = resolveMeristemPaths();
     const rotationStorePath =
         process.env.MERISTEM_SECURITY_JWT_ROTATION_STORE_PATH ??
         fileSecurity?.jwt_rotation_store_path ??
-        join(process.cwd(), 'data', 'core', 'jwt-rotation.json');
+        join(paths.dataDir, 'core', 'jwt-rotation.json');
     const rotationState = readJwtRotationStateSync(rotationStorePath);
     const fileSignSecret = fileSecurity?.jwt_sign_secret ?? '';
     const signSecret =

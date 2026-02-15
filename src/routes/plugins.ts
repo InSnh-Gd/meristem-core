@@ -23,6 +23,7 @@ import {
 import { PluginIsolateManager } from '../services/plugin-isolate';
 import { subscribe } from '../nats/connection';
 import { createTraceContext } from '../utils/trace-context';
+import { resolveMeristemPaths } from '../runtime/paths';
 
 type ErrorResponse = {
   error: string;
@@ -31,6 +32,18 @@ type ErrorResponse = {
 
 const isolateManager = new PluginIsolateManager();
 const subscriptionsByPlugin = new Map<string, Subscription[]>();
+
+const resolvePluginBasePath = (): string => {
+  const overridePath = process.env.MERISTEM_PLUGIN_BASE_PATH;
+  if (overridePath && overridePath.trim().length > 0) {
+    return overridePath.trim();
+  }
+
+  return resolveMeristemPaths().pluginsDir;
+};
+
+const resolvePluginRootPath = (pluginId: string): string =>
+  join(resolvePluginBasePath(), pluginId);
 
 const toErrorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
@@ -182,7 +195,7 @@ export function createPluginRoutes(db: Db) {
         const loadResult = await loadPlugin(
           db,
           parseResult.manifest,
-          plugin_path || `/plugins/${parseResult.manifest.id}`
+          plugin_path || resolvePluginRootPath(parseResult.manifest.id)
         );
 
         if (!loadResult.success) {
@@ -396,7 +409,7 @@ export function createPluginRoutes(db: Db) {
           return response.body;
         }
 
-        const pluginInstallPath = join('/plugins', parseResult.manifest.id);
+        const pluginInstallPath = resolvePluginRootPath(parseResult.manifest.id);
         await mkdir(pluginInstallPath, { recursive: true });
         await cp(extractPath, pluginInstallPath, { recursive: true, force: true });
 
@@ -486,7 +499,7 @@ export function createPluginRoutes(db: Db) {
         const result = await loadAllPluginsInOrder(
           db,
           parsedManifests,
-          base_path || '/plugins'
+          base_path || resolvePluginBasePath()
         );
 
         return result;

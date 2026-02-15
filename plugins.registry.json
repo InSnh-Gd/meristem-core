@@ -1,0 +1,16 @@
+{
+  "generated_at": "2026-02-15T00:00:00.000Z",
+  "plugins": [
+    {
+      "id": "com.meristem.mnet",
+      "name": "M-Net Overlay Network",
+      "repo": "https://github.com/InSnh-Gd/meristem-plugin-mnet.git",
+      "default_ref": "main",
+      "version": "1.0.0",
+      "core_range": "^0.1.0",
+      "entry": "src/index.ts",
+      "enabled_by_default": false
+    }
+  ]
+}
+
