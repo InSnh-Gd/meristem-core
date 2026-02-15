@@ -37,28 +37,28 @@ Usage:
   meristem-core [--home <path>] plugin <action> [...]
 
 Pacman-like plugin commands:
-  meristem-core [--home <path>] -Sy
+  meristem-core [--home <path>] plugin -Sy
     refresh plugin registry cache
 
-  meristem-core [--home <path>] -Ss [keyword]
+  meristem-core [--home <path>] plugin -Ss [keyword]
     list/search available plugins from registry
 
-  meristem-core [--home <path>] -S <pluginId> [--ref <git-ref>]
+  meristem-core [--home <path>] plugin -S <pluginId> [--ref <git-ref>]
     install/sync one plugin
 
-  meristem-core [--home <path>] -S --required
+  meristem-core [--home <path>] plugin -S --required
     sync required plugins (enabled_by_default=true)
 
-  meristem-core [--home <path>] -Su
+  meristem-core [--home <path>] plugin -Su
     update all installed plugins
 
-  meristem-core [--home <path>] -Syu
+  meristem-core [--home <path>] plugin -Syu
     refresh registry then update all installed plugins
 
-  meristem-core [--home <path>] -Q
+  meristem-core [--home <path>] plugin -Q
     list installed plugins (from lock file)
 
-  meristem-core [--home <path>] -Qk
+  meristem-core [--home <path>] plugin -Qk
     doctor check installed plugins
 `);
 };
@@ -132,6 +132,11 @@ const runPluginCommand = async (
   home: string | undefined,
   args: readonly string[],
 ): Promise<void> => {
+  if (args[0]?.startsWith('-')) {
+    await runPacmanCommand(home, args);
+    return;
+  }
+
   const [action, ...rest] = args;
   const actionArgs = [...rest];
   const registryUrl = parseFlagValue(actionArgs, '--registry-url');
@@ -350,11 +355,6 @@ const run = async (): Promise<void> => {
 
   if (domain === 'serve') {
     await runServeCommand(parsed.home);
-    return;
-  }
-
-  if (domain.startsWith('-')) {
-    await runPacmanCommand(parsed.home, [domain, ...rest]);
     return;
   }
 

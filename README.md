@@ -33,11 +33,11 @@ bun run start
 - Plugin discovery/install/update is handled by the built-in CLI:
 
 ```bash
-bun run cli -- -Sy
-bun run cli -- -Ss
-bun run cli -- -S com.meristem.mnet
-bun run cli -- -Q
-bun run cli -- -Qk
+bun run cli -- plugin -Sy
+bun run cli -- plugin -Ss
+bun run cli -- plugin -S com.meristem.mnet
+bun run cli -- plugin -Q
+bun run cli -- plugin -Qk
 ```
 
 - Plugin install root defaults to `MERISTEM_HOME/plugins` where `MERISTEM_HOME` is resolved as:
@@ -51,6 +51,6 @@ bun run cli -- -Qk
 ```bash
 bun run build:bin
 ./dist/meristem-core -h
-./dist/meristem-core -Ss
-./dist/meristem-core -S com.meristem.mnet
+./dist/meristem-core plugin -Ss
+./dist/meristem-core plugin -S com.meristem.mnet
 ```
