@@ -16,9 +16,13 @@ Install dependencies from this repository directly:
 bun install
 ```
 
-## 3) Minimal Startup
+## 3) Startup Modes
 
 ```bash
+# Development mode (legacy behavior, no MERISTEM_HOME isolation)
+bun run start:dev
+
+# Production mode (CLI-managed, single-binary compatible)
 bun run start
 ```
 
@@ -38,3 +42,4 @@ bun run cli -- plugin sync --plugin com.meristem.mnet
   1. `--home <path>`
   2. `MERISTEM_HOME`
   3. compile-time embedded core path
+- Development mode keeps legacy default plugin base path `/plugins` unless `MERISTEM_PLUGIN_BASE_PATH` is explicitly set.

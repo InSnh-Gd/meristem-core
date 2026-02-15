@@ -6,8 +6,10 @@
     "meristem": "dist/meristem"
   },
   "scripts": {
-    "dev": "bun run --watch src/index.ts",
+    "dev": "MERISTEM_RUNTIME_MODE=development bun run --watch src/index.ts",
+    "start:dev": "MERISTEM_RUNTIME_MODE=development bun run src/index.ts",
     "start": "bun run src/cli/meristem.ts core start",
+    "start:prod": "bun run src/cli/meristem.ts core start",
     "build": "bun build src/index.ts --outdir dist --target bun",
     "build:meta": "bun run scripts/write-build-meta.ts",
     "build:bin": "bun run build:meta && bun build --compile src/cli/meristem.ts --outfile dist/meristem",

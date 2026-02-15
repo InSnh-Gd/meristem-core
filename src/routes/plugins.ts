@@ -24,6 +24,7 @@ import { PluginIsolateManager } from '../services/plugin-isolate';
 import { subscribe } from '../nats/connection';
 import { createTraceContext } from '../utils/trace-context';
 import { resolveMeristemPaths } from '../runtime/paths';
+import { isDevelopmentMode } from '../runtime/mode';
 
 type ErrorResponse = {
   error: string;
@@ -37,6 +38,10 @@ const resolvePluginBasePath = (): string => {
   const overridePath = process.env.MERISTEM_PLUGIN_BASE_PATH;
   if (overridePath && overridePath.trim().length > 0) {
     return overridePath.trim();
+  }
+
+  if (isDevelopmentMode()) {
+    return '/plugins';
   }
 
   return resolveMeristemPaths().pluginsDir;

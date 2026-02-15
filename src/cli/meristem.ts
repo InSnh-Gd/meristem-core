@@ -177,8 +177,9 @@ const runCoreCommand = async (
 
   const homeResult = resolveMeristemHome(home);
   ensureMeristemHomeLayout(homeResult.home);
+  process.env.MERISTEM_RUNTIME_MODE = 'production';
   await syncRequiredLockedPlugins({ home: homeResult.home });
-  await startApp({ homePath: homeResult.home });
+  await startApp({ homePath: homeResult.home, runtimeMode: 'production' });
 };
 
 const run = async (): Promise<void> => {
@@ -213,4 +214,3 @@ run().catch((error: unknown) => {
   console.error(`[meristem] failed: ${message}`);
   process.exit(1);
 });
-

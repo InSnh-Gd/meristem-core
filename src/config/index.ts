@@ -9,6 +9,7 @@ import { join } from 'path';
 import { randomBytes } from 'crypto';
 import { readJwtRotationStateSync } from './jwt-rotation-store';
 import { resolveMeristemPaths } from '../runtime/paths';
+import { isDevelopmentMode } from '../runtime/mode';
 
 export interface CoreConfig {
     server: {
@@ -48,6 +49,13 @@ const resolveConfigPaths = (): readonly string[] => {
     const explicitPath = process.env.MERISTEM_CONFIG_PATH;
     if (explicitPath && explicitPath.trim().length > 0) {
         return [explicitPath.trim()];
+    }
+
+    if (isDevelopmentMode()) {
+        return [
+            './config.toml',
+            ...CONFIG_PATHS,
+        ];
     }
 
     const paths = resolveMeristemPaths();
@@ -122,11 +130,13 @@ export function loadConfig(): CoreConfig {
     }
 
     const fileSecurity = fileConfig.security;
-    const paths = resolveMeristemPaths();
+    const rotationDefaultPath = isDevelopmentMode()
+        ? join(process.cwd(), 'data', 'core', 'jwt-rotation.json')
+        : join(resolveMeristemPaths().dataDir, 'core', 'jwt-rotation.json');
     const rotationStorePath =
         process.env.MERISTEM_SECURITY_JWT_ROTATION_STORE_PATH ??
         fileSecurity?.jwt_rotation_store_path ??
-        join(paths.dataDir, 'core', 'jwt-rotation.json');
+        rotationDefaultPath;
     const rotationState = readJwtRotationStateSync(rotationStorePath);
     const fileSignSecret = fileSecurity?.jwt_sign_secret ?? '';
     const signSecret =
